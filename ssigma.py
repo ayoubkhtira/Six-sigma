@@ -5,10 +5,9 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from scipy import stats
-import sqlite3
-from datetime import datetime
 import io
 import warnings
+import base64
 warnings.filterwarnings('ignore')
 
 # Configuration de la page
@@ -60,44 +59,77 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initialisation de la base de données SQLite
-def init_database():
-    conn = sqlite3.connect('six_sigma.db')
-    c = conn.cursor()
+# Initialisation des données en mémoire (pour Streamlit Cloud)
+def init_session_state():
+    """Initialise les données en mémoire dans st.session_state"""
+    if 'projects_df' not in st.session_state:
+        st.session_state.projects_df = pd.DataFrame(columns=[
+            'id', 'project_name', 'description', 'status', 
+            'start_date', 'end_date', 'sigma_level', 'created_at'
+        ])
     
-    # Table des projets
-    c.execute('''CREATE TABLE IF NOT EXISTS projects
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  project_name TEXT,
-                  description TEXT,
-                  status TEXT,
-                  start_date DATE,
-                  end_date DATE,
-                  sigma_level REAL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    if 'measurements_df' not in st.session_state:
+        st.session_state.measurements_df = pd.DataFrame(columns=[
+            'id', 'project_id', 'measurement_date', 'value', 
+            'category', 'subgroup_size'
+        ])
     
-    # Table des données de mesure
-    c.execute('''CREATE TABLE IF NOT EXISTS measurements
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  project_id INTEGER,
-                  measurement_date DATE,
-                  value REAL,
-                  category TEXT,
-                  subgroup_size INTEGER DEFAULT 1,
-                  FOREIGN KEY (project_id) REFERENCES projects (id))''')
+    if 'defects_df' not in st.session_state:
+        st.session_state.defects_df = pd.DataFrame(columns=[
+            'id', 'project_id', 'defect_type', 'count', 'category', 'date'
+        ])
     
-    # Table des défauts
-    c.execute('''CREATE TABLE IF NOT EXISTS defects
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  project_id INTEGER,
-                  defect_type TEXT,
-                  count INTEGER,
-                  category TEXT,
-                  date DATE,
-                  FOREIGN KEY (project_id) REFERENCES projects (id))''')
+    # Générer des données d'exemple pour la démonstration
+    if st.session_state.projects_df.empty:
+        example_projects = pd.DataFrame([
+            {
+                'id': 1,
+                'project_name': 'Amélioration du Processus de Fabrication',
+                'description': 'Réduction des défauts dans la ligne de production',
+                'status': 'Actif',
+                'start_date': '2024-01-15',
+                'end_date': '2024-06-30',
+                'sigma_level': 3.5,
+                'created_at': '2024-01-15 10:30:00'
+            },
+            {
+                'id': 2,
+                'project_name': 'Optimisation du Temps de Cycle',
+                'description': 'Réduction du temps de cycle de production de 20%',
+                'status': 'Terminé',
+                'start_date': '2023-10-01',
+                'end_date': '2024-01-31',
+                'sigma_level': 4.2,
+                'created_at': '2023-10-01 09:15:00'
+            }
+        ])
+        st.session_state.projects_df = example_projects
     
-    conn.commit()
-    return conn
+    if st.session_state.measurements_df.empty:
+        np.random.seed(42)
+        example_measurements = pd.DataFrame({
+            'id': range(1, 101),
+            'project_id': np.random.choice([1, 2], 100),
+            'measurement_date': pd.date_range(start='2024-01-01', periods=100, freq='D'),
+            'value': np.random.normal(100, 10, 100),
+            'category': np.random.choice(['Dimension', 'Poids', 'Température', 'Pression'], 100),
+            'subgroup_size': 5
+        })
+        st.session_state.measurements_df = example_measurements
+    
+    if st.session_state.defects_df.empty:
+        example_defects = pd.DataFrame({
+            'id': range(1, 31),
+            'project_id': 1,
+            'defect_type': np.random.choice([
+                'Rayures', 'Inclusions', 'Déformations', 'Fissures', 
+                'Porosités', 'Décalage', 'Couleur incorrecte'
+            ], 30),
+            'count': np.random.randint(10, 100, 30),
+            'category': np.random.choice(['Surface', 'Structure', 'Dimension', 'Apparence'], 30),
+            'date': pd.date_range(start='2024-01-01', periods=30, freq='D')
+        })
+        st.session_state.defects_df = example_defects
 
 # Fonctions utilitaires
 def calculate_cp_cpk(data, lsl, usl):
@@ -262,9 +294,17 @@ def create_ishikawa_diagram(causes):
     
     return fig
 
+# Fonction pour générer un ID unique
+def generate_id(existing_ids):
+    """Génère un nouvel ID unique"""
+    if len(existing_ids) == 0:
+        return 1
+    return max(existing_ids) + 1
+
 # Interface principale
 def main():
-    conn = init_database()
+    # Initialiser les données en mémoire
+    init_session_state()
     
     # Sidebar
     with st.sidebar:
@@ -280,7 +320,7 @@ def main():
         st.markdown("### 📋 Projet Actif")
         
         # Sélection du projet
-        projects_df = pd.read_sql("SELECT * FROM projects", conn)
+        projects_df = st.session_state.projects_df
         if not projects_df.empty:
             project_names = projects_df['project_name'].tolist()
             selected_project = st.selectbox("Choisir un projet", project_names)
@@ -340,7 +380,7 @@ def main():
             """, unsafe_allow_html=True)
         
         with col4:
-            total_measurements = pd.read_sql("SELECT COUNT(*) as count FROM measurements", conn)['count'][0]
+            total_measurements = len(st.session_state.measurements_df)
             st.markdown(f"""
             <div class="metric-card">
                 <h3>{total_measurements}</h3>
@@ -372,10 +412,9 @@ def main():
         # Dernières mesures
         st.markdown('<h3 class="sub-header">Dernières Mesures</h3>', unsafe_allow_html=True)
         if project_id:
-            recent_measurements = pd.read_sql(
-                f"SELECT * FROM measurements WHERE project_id = {project_id} ORDER BY measurement_date DESC LIMIT 10",
-                conn
-            )
+            recent_measurements = st.session_state.measurements_df[
+                st.session_state.measurements_df['project_id'] == project_id
+            ].sort_values('measurement_date', ascending=False).head(10)
             if not recent_measurements.empty:
                 st.dataframe(recent_measurements, use_container_width=True)
     
@@ -399,17 +438,32 @@ def main():
                     end_date = st.date_input("Date de fin prévue")
                 
                 if st.form_submit_button("💾 Créer le Projet"):
-                    c = conn.cursor()
-                    c.execute("""
-                        INSERT INTO projects (project_name, description, status, start_date, end_date, sigma_level)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (project_name, description, status, start_date, end_date, sigma_level))
-                    conn.commit()
+                    # Générer un nouvel ID
+                    existing_ids = st.session_state.projects_df['id'].tolist() if not st.session_state.projects_df.empty else []
+                    new_id = generate_id(existing_ids)
+                    
+                    # Ajouter le nouveau projet
+                    new_project = pd.DataFrame([{
+                        'id': new_id,
+                        'project_name': project_name,
+                        'description': description,
+                        'status': status,
+                        'start_date': start_date,
+                        'end_date': end_date,
+                        'sigma_level': sigma_level,
+                        'created_at': pd.Timestamp.now()
+                    }])
+                    
+                    st.session_state.projects_df = pd.concat(
+                        [st.session_state.projects_df, new_project], 
+                        ignore_index=True
+                    )
+                    
                     st.success(f"Projet '{project_name}' créé avec succès!")
                     st.rerun()
         
         with tab2:
-            projects_df = pd.read_sql("SELECT * FROM projects ORDER BY created_at DESC", conn)
+            projects_df = st.session_state.projects_df.sort_values('created_at', ascending=False)
             if not projects_df.empty:
                 st.dataframe(projects_df, use_container_width=True)
                 
@@ -444,20 +498,24 @@ def main():
                                                      ["Planifié", "Actif", "En attente", "Terminé", "Annulé"],
                                                      index=["Planifié", "Actif", "En attente", "Terminé", "Annulé"].index(project_data['status']))
                             new_start = st.date_input("Date de début", 
-                                                     value=datetime.strptime(project_data['start_date'], '%Y-%m-%d').date() 
-                                                     if project_data['start_date'] else datetime.today().date())
+                                                     value=pd.to_datetime(project_data['start_date']).date() 
+                                                     if pd.notnull(project_data['start_date']) else pd.Timestamp.now().date())
                         
                         if st.form_submit_button("💾 Mettre à jour"):
-                            c = conn.cursor()
-                            c.execute("""
-                                UPDATE projects 
-                                SET project_name = ?, description = ?, status = ?, 
-                                    start_date = ?, sigma_level = ?
-                                WHERE id = ?
-                            """, (new_name, new_desc, new_status, new_start, new_sigma, project_data['id']))
-                            conn.commit()
-                            st.success("Projet mis à jour avec succès!")
-                            st.rerun()
+                            # Mettre à jour le projet dans le DataFrame
+                            idx = st.session_state.projects_df[
+                                st.session_state.projects_df['project_name'] == project_to_edit
+                            ].index
+                            
+                            if len(idx) > 0:
+                                st.session_state.projects_df.at[idx[0], 'project_name'] = new_name
+                                st.session_state.projects_df.at[idx[0], 'description'] = new_desc
+                                st.session_state.projects_df.at[idx[0], 'status'] = new_status
+                                st.session_state.projects_df.at[idx[0], 'start_date'] = new_start
+                                st.session_state.projects_df.at[idx[0], 'sigma_level'] = new_sigma
+                                
+                                st.success("Projet mis à jour avec succès!")
+                                st.rerun()
     
     elif app_mode == "📊 Analyse Statistique":
         st.markdown('<h1 class="main-header">📊 Analyse Statistique</h1>', unsafe_allow_html=True)
@@ -498,7 +556,7 @@ def main():
                 
                 # Tests statistiques
                 if len(analysis_data) > 0:
-                    st.markdown('<h3 class="sub-header">Tests d'Hypothèses</h3>', unsafe_allow_html=True)
+                    st.markdown('<h3 class="sub-header">Tests d\'Hypothèses</h3>', unsafe_allow_html=True)
                     
                     test_type = st.radio("Type de test", 
                                         ["Test de normalité (Shapiro-Wilk)", "Test t à un échantillon", "Intervalle de confiance"])
@@ -556,12 +614,9 @@ def main():
                 data = pd.DataFrame({'value': sample_data})
                 
             elif data_option == "Données existantes":
-                measurements_df = pd.read_sql(
-                    f"SELECT value FROM measurements WHERE project_id = {project_id}",
-                    conn
-                )
+                measurements_df = st.session_state.measurements_df
                 if not measurements_df.empty:
-                    data = measurements_df
+                    data = measurements_df[['value']]
                 else:
                     st.warning("Aucune donnée de mesure pour ce projet")
                     data = pd.DataFrame()
@@ -638,10 +693,7 @@ def main():
                 })
                 
             elif data_option == "Données existantes":
-                defect_data = pd.read_sql(
-                    f"SELECT defect_type, count, category FROM defects WHERE project_id = {project_id}",
-                    conn
-                )
+                defect_data = st.session_state.defects_df
                 if defect_data.empty:
                     st.info("Aucune donnée de défauts pour ce projet")
                     defect_data = pd.DataFrame()
@@ -782,10 +834,7 @@ def main():
                 np.random.seed(42)
                 data = np.random.normal(loc=target, scale=(usl-lsl)/6, size=200)
             elif data_option == "Mesures existantes":
-                measurements_df = pd.read_sql(
-                    f"SELECT value FROM measurements WHERE project_id = {project_id}",
-                    conn
-                )
+                measurements_df = st.session_state.measurements_df
                 data = measurements_df['value'].values if not measurements_df.empty else np.array([])
             else:
                 uploaded_file = st.file_uploader("Uploader des données", type=['csv', 'xlsx'])
@@ -881,23 +930,20 @@ def main():
     elif app_mode == "📤 Import/Export":
         st.markdown('<h1 class="main-header">📤 Import/Export de Données</h1>', unsafe_allow_html=True)
         
-        tab1, tab2, tab3 = st.tabs(["📥 Import", "📤 Export", "🗄️ Sauvegarde"])
+        tab1, tab2 = st.tabs(["📥 Import", "📤 Export"])
         
         with tab1:
             st.markdown("### Import de Données")
             
             import_type = st.selectbox("Type de données à importer",
-                                      ["Mesures", "Défauts", "Projets"])
+                                      ["Projets", "Mesures", "Défauts"])
             
-            uploaded_file = st.file_uploader(f"Choisir un fichier pour {import_type}",
-                                            type=['csv', 'xlsx'])
+            uploaded_file = st.file_uploader(f"Choisir un fichier CSV pour {import_type}",
+                                            type=['csv'])
             
             if uploaded_file is not None:
                 try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
+                    df = pd.read_csv(uploaded_file)
                     
                     st.success(f"Fichier chargé avec succès! ({len(df)} lignes)")
                     st.dataframe(df.head(), use_container_width=True)
@@ -913,8 +959,15 @@ def main():
                     st.table(col_info)
                     
                     if st.button(f"Importer les {import_type}"):
-                        # Logique d'import ici
+                        if import_type == "Projets":
+                            st.session_state.projects_df = df
+                        elif import_type == "Mesures":
+                            st.session_state.measurements_df = df
+                        elif import_type == "Défauts":
+                            st.session_state.defects_df = df
+                        
                         st.success(f"{len(df)} {import_type} importés avec succès!")
+                        st.rerun()
                         
                 except Exception as e:
                     st.error(f"Erreur lors du chargement: {str(e)}")
@@ -923,15 +976,22 @@ def main():
             st.markdown("### Export de Données")
             
             export_type = st.selectbox("Type de données à exporter",
-                                      ["Tous les projets", "Mesures par projet", 
-                                       "Défauts par projet", "Rapport complet"])
+                                      ["Tous les projets", "Toutes les mesures", 
+                                       "Tous les défauts", "Rapport complet"])
             
             if export_type == "Tous les projets":
-                data = pd.read_sql("SELECT * FROM projects", conn)
-            elif export_type == "Mesures par projet" and project_id:
-                data = pd.read_sql(f"SELECT * FROM measurements WHERE project_id = {project_id}", conn)
-            elif export_type == "Défauts par projet" and project_id:
-                data = pd.read_sql(f"SELECT * FROM defects WHERE project_id = {project_id}", conn)
+                data = st.session_state.projects_df
+            elif export_type == "Toutes les mesures":
+                data = st.session_state.measurements_df
+            elif export_type == "Tous les défauts":
+                data = st.session_state.defects_df
+            elif export_type == "Rapport complet":
+                # Créer un rapport consolidé
+                report_data = {
+                    'Projets': st.session_state.projects_df,
+                    'Mesures': st.session_state.measurements_df,
+                    'Défauts': st.session_state.defects_df
+                }
             
             if 'data' in locals() and not data.empty:
                 st.dataframe(data, use_container_width=True)
@@ -960,44 +1020,23 @@ def main():
                         file_name=f"{export_type.replace(' ', '_').lower()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
-        
-        with tab3:
-            st.markdown("### Sauvegarde de la Base de Données")
             
-            st.info("""
-            **Fonctionnalités de sauvegarde:**
-            - Export complet de la base de données
-            - Sauvegarde au format SQL
-            - Restauration à partir d'une sauvegarde
-            """)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("💾 Créer une sauvegarde", use_container_width=True):
-                    # Sauvegarde SQLite
-                    with open('six_sigma.db', 'rb') as f:
-                        db_data = f.read()
-                    
-                    st.download_button(
-                        label="📥 Télécharger la sauvegarde",
-                        data=db_data,
-                        file_name=f"six_sigma_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db",
-                        mime="application/octet-stream"
-                    )
-            
-            with col2:
-                restore_file = st.file_uploader("Choisir un fichier de sauvegarde",
-                                               type=['db'],
-                                               key="restore_uploader")
+            elif export_type == "Rapport complet":
+                # Créer un fichier Excel avec plusieurs onglets
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    for sheet_name, df_data in report_data.items():
+                        if not df_data.empty:
+                            df_data.to_excel(writer, index=False, sheet_name=sheet_name[:31])
                 
-                if restore_file and st.button("🔄 Restaurer la base", use_container_width=True):
-                    with open('six_sigma.db', 'wb') as f:
-                        f.write(restore_file.getvalue())
-                    st.success("Base de données restaurée avec succès!")
-                    st.rerun()
-    
-    conn.close()
+                excel_data = excel_buffer.getvalue()
+                
+                st.download_button(
+                    label="📥 Télécharger Rapport Complet (Excel)",
+                    data=excel_data,
+                    file_name="rapport_complet_six_sigma.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
 if __name__ == "__main__":
     main()
