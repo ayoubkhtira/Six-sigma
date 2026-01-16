@@ -1,11 +1,6 @@
-# Application Six Sigma - Requirements minimales
-# ==============================================
-
 streamlit==1.28.0
 pandas==2.1.4
 numpy==1.26.2
 plotly==5.18.0
 scipy==1.11.4
 openpyxl==3.1.2
-sqlalchemy==2.0.23
-python-dotenv==1.0.0
