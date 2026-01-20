@@ -1,178 +1,31 @@
-import pandas as pd
-import numpy as np
-import math
-from scipy import stats
-import matplotlib.pyplot as plt
-from dataclasses import dataclass
-from typing import Dict, Tuple, Optional, List
-import streamlit as st
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    Image as RLImage,
-    PageBreak,
-)
-from reportlab.lib.utils import ImageReader
+# Code de test pour vérifier la conversion
+test_data = {
+    'A': ['N° de la pièce', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'],
+    'B': ['OPERATEUR 1', '45.08', '44.94', '45.08', '44.97', '44.92', '45.03', '45.24', '45.16', '45.2', '45.07'],
+    'C': ['OPERATEUR 1', '45.1', '44.97', '45.11', '45.02', '44.95', '45.06', '45.36', '45.16', '45.2', '45.1'],
+    'D': ['OPERATEUR 1', '45.09', '44.93', '45.13', '45.01', '45.01', '45.05', '45.31', '45.1', '45.24', '45.05'],
+    'E': ['OPERATEUR 2', '45.01', '44.92', '44.95', '45.01', '44.95', '45.04', '45.12', '45.12', '45.06', '45.02'],
+    'F': ['OPERATEUR 2', '45.04', '44.95', '45.11', '44.93', '44.99', '45.06', '45.21', '45.13', '45.19', '45.05'],
+    'G': ['OPERATEUR 2', '45.02', '44.95', '45.11', '45.0', '44.97', '44.99', '45.32', '45.13', '45.24', '45.09'],
+    'H': ['OPERATEUR 3', '45.04', '44.92', '45.1', '45.02', '44.99', '45.07', '45.26', '45.13', '45.19', '45.1'],
+    'I': ['OPERATEUR 3', '45.07', '44.97', '45.12', '44.99', '44.97', '45.03', '45.29', '45.13', '45.17', '45.1'],
+    'J': ['OPERATEUR 3', '45.07', '44.91', '45.11', '44.99', '44.95', '45.02', '45.28', '45.14', '45.16', '45.09']
+}
 
-# -----------------------------
-# Modèle de données / Résultats
-# -----------------------------
-@dataclass
-class AnovaResult:
-    p: int
-    o: int
-    r: int
-    confidence_level: float
-    anova_table: pd.DataFrame
-    var_components: pd.DataFrame
-    study_var: pd.DataFrame
-    metrics: Dict[str, float]
-    conclusion: Dict[str, str]
-    f_tests: Dict[str, Tuple[float, float, float]]  # F-statistic, p-value, critical F
+df_test = pd.DataFrame(test_data)
+print("DataFrame d'origine:")
+print(df_test.head(3))
 
-# -----------------------------
-# Convertir en format long
-# -----------------------------
-def convert_wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
-    # Melt the dataframe to long format
-    long_df = df.melt(id_vars=["N° de la pièce"], var_name="Opérateur", value_name="Mesure")
-    
-    # Extract the operator number from the column names
-    long_df["Opérateur"] = long_df["Opérateur"].str.extract(r"(OPERATEUR \d+)")[0]
-    
-    # Add trial information
-    long_df["Essai"] = long_df.groupby(["N° de la pièce", "Opérateur"]).cumcount() + 1
-    
-    # Rename columns
-    long_df = long_df.rename(columns={"N° de la pièce": "Pièce"})
-    
-    # Ensure numeric columns for Mesure and Essai
-    long_df["Mesure"] = pd.to_numeric(long_df["Mesure"], errors="coerce")
-    long_df["Essai"] = pd.to_numeric(long_df["Essai"], errors="coerce")
-    
-    return long_df
+# Tester la conversion
+df_converted = convert_wide_to_long_specific(df_test)
+print("\nDataFrame converti (premières lignes):")
+print(df_converted.head(15))
+print(f"\nDimensions: {df_converted.shape}")
+print(f"Pièces uniques: {df_converted['Pièce'].nunique()}")
+print(f"Opérateurs uniques: {df_converted['Opérateur'].nunique()}")
+print(f"Essais uniques: {df_converted['Essai'].nunique()}")
 
-# -----------------------------
-# Fonction de validation des données
-# -----------------------------
-def validate_dataset(df: pd.DataFrame, n_parts: int, n_ops: int, n_trials: int) -> Tuple[bool, List[str]]:
-    errors: List[str] = []
-    required = {"Pièce", "Opérateur", "Essai", "Mesure"}
-    missing = required - set(df.columns)
-    if missing:
-        errors.append(f"Colonnes manquantes: {', '.join(sorted(missing))}.")
-        return False, errors
-
-    df2 = df.copy()
-    df2["Pièce"] = df2["Pièce"].astype(str).str.strip()
-    df2["Opérateur"] = df2["Opérateur"].astype(str).str.strip()
-    df2["Essai"] = pd.to_numeric(df2["Essai"], errors="coerce")
-    df2["Mesure"] = pd.to_numeric(df2["Mesure"], errors="coerce")
-
-    if df2["Essai"].isna().any():
-        errors.append("La colonne 'Essai' contient des valeurs non numériques.")
-    if df2["Mesure"].isna().any():
-        errors.append("La colonne 'Mesure' contient des valeurs vides ou non numériques.")
-
-    parts = sorted(df2["Pièce"].unique())
-    ops = sorted(df2["Opérateur"].unique())
-
-    if len(parts) != n_parts:
-        errors.append(f"Nombre de pièces détectées = {len(parts)} (attendu = {n_parts}).")
-    if len(ops) != n_ops:
-        errors.append(f"Nombre d'opérateurs détecté = {len(ops)} (attendu = {n_ops}).")
-
-    counts = df2.groupby(["Pièce", "Opérateur"])["Mesure"].count()
-    if counts.nunique() != 1:
-        errors.append("Plan non équilibré: le nombre de mesures varie selon les couples Pièce x Opérateur.")
-    else:
-        r = int(counts.iloc[0])
-        if r != n_trials:
-            errors.append(f"Nombre de répétitions détecté = {r} (attendu = {n_trials}).")
-
-    expected_rows = n_parts * n_ops * n_trials
-    if len(df2) != expected_rows:
-        errors.append(f"Nombre de lignes = {len(df2)} (attendu = {expected_rows} = pièces×opérateurs×essais).")
-
-    return (len(errors) == 0), errors
-
-# -----------------------------
-# Calcul Gage R&R (ANOVA)
-# -----------------------------
-def gage_rr_anova(df: pd.DataFrame, confidence_level: float = 0.95) -> AnovaResult:
-    # Placeholder for Gage R&R ANOVA calculations
-    # You would insert the logic for calculating the Gage R&R analysis here
-    return AnovaResult(p=10, o=3, r=3, confidence_level=confidence_level,
-                        anova_table=pd.DataFrame(),
-                        var_components=pd.DataFrame(),
-                        study_var=pd.DataFrame(),
-                        metrics={"EV": 0.1, "AV": 0.1, "GRR": 0.1, "TV": 0.1, "%GRR": 10, "ndc": 1},
-                        conclusion={"niveau": "Acceptable", "regle": "Entre 10 % et 30 % : acceptable mais améliorable", "css": "rr-orange"},
-                        f_tests={"Pièce": (1.5, 0.05, 2.5), "Opérateur": (2.1, 0.04, 2.8), "Pièce*Opérateur": (1.8, 0.05, 2.6)})
-
-# -----------------------------
-# UI Streamlit
-# -----------------------------
-st.title("📏 Calculateur Gage R&R (Cage R&R) — ANOVA")
-st.caption("Saisie manuelle ou import (CSV/Excel) → calcul EV, AV, Vp, Vt + interprétation + rapport PDF.")
-
-with st.sidebar:
-    n_parts = st.number_input("Nombre de pièces", min_value=2, max_value=50, value=10, step=1)
-    n_ops = st.number_input("Nombre d'opérateurs", min_value=2, max_value=20, value=3, step=1)
-    n_trials = st.number_input("Nombre de mesures (essais) par opérateur & pièce", min_value=2, max_value=10, value=3, step=1)
-
-    entry_mode = st.radio("Mode de saisie des données", ["Saisie manuelle", "Importer (CSV/Excel)"], horizontal=False)
-
-    confidence_level = st.selectbox(
-        "Niveau de confiance",
-        options=[0.90, 0.95, 0.99],
-        format_func=lambda x: f"{x*100:.0f}%",
-        index=1
-    )
-
-tabs = st.tabs(["1) Données", "2) Résultats", "3) Graphes", "4) Rapport / Export"])
-
-# --- Tab 1 : Données
-with tabs[0]:
-    st.subheader("Données d'entrée")
-    
-    # For demonstration, let's assume we already have the imported data
-    # In the real case, you would load the uploaded file here
-    uploaded_file = st.file_uploader("Téléchargez votre fichier Excel", type=["xlsx"])
-
-    if uploaded_file is not None:
-        try:
-            df = pd.read_excel(uploaded_file)
-            df_long = convert_wide_to_long(df)
-
-            # Show the converted data
-            st.dataframe(df_long.head())
-
-            # Validate the data
-            ok, errs = validate_dataset(df_long, int(n_parts), int(n_ops), int(n_trials))
-            if ok:
-                st.success("✅ Données valides.")
-            else:
-                st.error("❌ Données invalides :")
-                for e in errs:
-                    st.write(f"- {e}")
-        except Exception as e:
-            st.error(f"Erreur lors de l'importation du fichier: {str(e)}")
-
-# --- Tab 2 : Résultats
-with tabs[1]:
-    st.subheader("Résultats")
-    if uploaded_file is not None and ok:
-        # Perform Gage R&R analysis
-        res = gage_rr_anova(df_long, confidence_level)
-        # Display results
-        st.write(res)
-
-# --- Further code for Graphes and Export sections
+# Vérifier l'équilibre
+counts = df_converted.groupby(['Pièce', 'Opérateur'])['Mesure'].count()
+print(f"\nPlan équilibré: {counts.nunique() == 1}")
+print(f"Mesures par couple: {counts.iloc[0] if not counts.empty else 'N/A'}")
