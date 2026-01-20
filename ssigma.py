@@ -3,7 +3,7 @@ import numpy as np
 import streamlit as st
 
 # Function to calculate the R&R
-def calculate_rr(df, num_operators, num_measurements):
+def calculate_rr(df, num_operators, num_measurements, confidence_coefficient):
     # Validate dimensions
     if df.shape[1] < num_operators * num_measurements + 1:
         st.error(f"Les données du fichier ne contiennent pas assez de colonnes pour {num_operators} opérateurs et {num_measurements} mesures.")
@@ -27,7 +27,13 @@ def calculate_rr(df, num_operators, num_measurements):
     av = (repeatability + reproducibility) / total_variance * 100
     vp = 100 - rr - ev - av
     
-    return rr, ev, av, vp
+    # Adjust the results based on the confidence coefficient (5.15 for 99% confidence level)
+    rr_adjusted = rr * confidence_coefficient
+    ev_adjusted = ev * confidence_coefficient
+    av_adjusted = av * confidence_coefficient
+    vp_adjusted = vp * confidence_coefficient
+    
+    return rr_adjusted, ev_adjusted, av_adjusted, vp_adjusted
 
 # Streamlit interface
 st.title('Calcul Professionnel de Gage R&R')
@@ -49,12 +55,14 @@ if uploaded_file is not None:
     num_operators = st.sidebar.slider("Nombre d'opérateurs", min_value=2, max_value=5, value=3)
     num_measurements = st.sidebar.slider("Nombre de mesures par opérateur", min_value=2, max_value=5, value=3)
     num_pieces = st.sidebar.slider("Nombre de pièces", min_value=5, max_value=20, value=10)
+    confidence_level = st.sidebar.slider("Coefficient de niveau de confiance", min_value=1.0, max_value=10.0, value=5.15, step=0.01)
     
     st.sidebar.write(f"Vous avez sélectionné : {num_operators} opérateurs, {num_measurements} mesures, et {num_pieces} pièces.")
+    st.sidebar.write(f"Coefficient de niveau de confiance : {confidence_level:.2f}")
     
     # Perform calculation if data is valid
     if df.shape[0] >= num_pieces and df.shape[1] >= num_operators * num_measurements + 1:
-        rr, ev, av, vp = calculate_rr(df, num_operators, num_measurements)
+        rr, ev, av, vp = calculate_rr(df, num_operators, num_measurements, confidence_level)
         
         if rr is not None:
             # Display the results
