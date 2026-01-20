@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
+from scipy import stats
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
@@ -72,11 +73,13 @@ class AnovaResult:
     p: int
     o: int
     r: int
+    confidence_level: float
     anova_table: pd.DataFrame
     var_components: pd.DataFrame
     study_var: pd.DataFrame
     metrics: Dict[str, float]
     conclusion: Dict[str, str]
+    f_tests: Dict[str, Tuple[float, float, float]]  # F-statistic, p-value, critical F
 
 
 # -----------------------------
@@ -257,13 +260,14 @@ def validate_dataset(df: pd.DataFrame, n_parts: int, n_ops: int, n_trials: int) 
 
 
 # -----------------------------
-# Calcul Gage R&R (ANOVA)
+# Calcul Gage R&R (ANOVA) avec tests F
 # -----------------------------
-def gage_rr_anova(df: pd.DataFrame) -> AnovaResult:
+def gage_rr_anova(df: pd.DataFrame, confidence_level: float = 0.95) -> AnovaResult:
     """
-    Calcule l'étude Gage R&R par ANOVA (plan équilibré).
-
+    Calcule l'étude Gage R&R par ANOVA (plan équilibré) avec tests d'hypothèse.
+    
     DF attendu: colonnes Pièce, Opérateur, Essai, Mesure
+    confidence_level: niveau de confiance (ex: 0.95 pour 95%)
     """
     d = df.copy()
     d["Pièce"] = d["Pièce"].astype(str)
@@ -316,18 +320,52 @@ def gage_rr_anova(df: pd.DataFrame) -> AnovaResult:
     MS_po = SS_po / df_po if df_po > 0 else np.nan
     MS_e = SS_e / df_e if df_e > 0 else np.nan
 
+    # Tests d'hypothèse F (tests statistiques)
+    alpha = 1 - confidence_level
+    
+    # Test pour l'interaction Pièce*Opérateur
+    if df_po > 0 and df_e > 0:
+        F_po = MS_po / MS_e if MS_e > 0 else np.nan
+        p_value_po = 1 - stats.f.cdf(F_po, df_po, df_e) if not np.isnan(F_po) else np.nan
+        F_crit_po = stats.f.ppf(1 - alpha, df_po, df_e) if df_po > 0 and df_e > 0 else np.nan
+    else:
+        F_po, p_value_po, F_crit_po = np.nan, np.nan, np.nan
+    
+    # Test pour l'opérateur (si interaction non significative ou si on utilise MS_e)
+    if df_po > 0:
+        F_op = MS_op / MS_po if MS_po > 0 else np.nan
+        p_value_op = 1 - stats.f.cdf(F_op, df_op, df_po) if not np.isnan(F_op) else np.nan
+        F_crit_op = stats.f.ppf(1 - alpha, df_op, df_po) if df_op > 0 and df_po > 0 else np.nan
+    else:
+        F_op = MS_op / MS_e if MS_e > 0 else np.nan
+        p_value_op = 1 - stats.f.cdf(F_op, df_op, df_e) if not np.isnan(F_op) else np.nan
+        F_crit_op = stats.f.ppf(1 - alpha, df_op, df_e) if df_op > 0 and df_e > 0 else np.nan
+    
+    # Test pour la pièce
+    if df_po > 0:
+        F_part = MS_part / MS_po if MS_po > 0 else np.nan
+        p_value_part = 1 - stats.f.cdf(F_part, df_part, df_po) if not np.isnan(F_part) else np.nan
+        F_crit_part = stats.f.ppf(1 - alpha, df_part, df_po) if df_part > 0 and df_po > 0 else np.nan
+    else:
+        F_part = MS_part / MS_e if MS_e > 0 else np.nan
+        p_value_part = 1 - stats.f.cdf(F_part, df_part, df_e) if not np.isnan(F_part) else np.nan
+        F_crit_part = stats.f.ppf(1 - alpha, df_part, df_e) if df_part > 0 and df_e > 0 else np.nan
+
     # Composantes de variance (méthode ANOVA)
     sigma_e2 = MS_e  # répétabilité (Equipment)
 
-    sigma_po2 = max((MS_po - MS_e) / r, 0.0) if df_po > 0 else 0.0  # interaction
-
-    sigma_o2 = (
-        max((MS_op - MS_po) / (p * r), 0.0) if df_po > 0 else max((MS_op - MS_e) / (p * r), 0.0)
-    )  # opérateur
-
-    sigma_p2 = (
-        max((MS_part - MS_po) / (o * r), 0.0) if df_po > 0 else max((MS_part - MS_e) / (o * r), 0.0)
-    )  # pièce-à-pièce
+    # Si l'interaction est significative (p < alpha), on l'inclut
+    include_interaction = p_value_po < alpha if not np.isnan(p_value_po) else False
+    
+    if include_interaction:
+        sigma_po2 = max((MS_po - MS_e) / r, 0.0) if df_po > 0 else 0.0  # interaction
+        sigma_o2 = max((MS_op - MS_po) / (p * r), 0.0) if df_po > 0 else 0.0  # opérateur
+        sigma_p2 = max((MS_part - MS_po) / (o * r), 0.0) if df_po > 0 else 0.0  # pièce-à-pièce
+    else:
+        # Si interaction non significative, on la combine avec l'erreur
+        sigma_po2 = 0.0
+        sigma_o2 = max((MS_op - MS_e) / (p * r), 0.0)
+        sigma_p2 = max((MS_part - MS_e) / (o * r), 0.0)
 
     sigma_grr2 = sigma_e2 + sigma_o2 + sigma_po2
     sigma_total2 = sigma_grr2 + sigma_p2
@@ -363,12 +401,16 @@ def gage_rr_anova(df: pd.DataFrame) -> AnovaResult:
 
     ndc = int(math.floor(1.41 * (PV / GRR))) if GRR > 0 else 0
 
+    # Table ANOVA avec p-values et tests F
     anova_table = pd.DataFrame(
         {
             "Source": ["Pièce", "Opérateur", "Pièce*Opérateur", "Erreur (Répétabilité)", "Total"],
             "SS": [SS_part, SS_op, SS_po, SS_e, SS_total],
             "ddl": [df_part, df_op, df_po, df_e, df_total],
             "MS": [MS_part, MS_op, MS_po, MS_e, np.nan],
+            "F": [F_part, F_op, F_po, np.nan, np.nan],
+            "p-value": [p_value_part, p_value_op, p_value_po, np.nan, np.nan],
+            f"F-crit ({int(confidence_level*100)}%)": [F_crit_part, F_crit_op, F_crit_po, np.nan, np.nan],
         }
     )
 
@@ -417,6 +459,17 @@ def gage_rr_anova(df: pd.DataFrame) -> AnovaResult:
         }
     )
 
+    # Tests F stockés
+    f_tests = {
+        "Pièce": (F_part, p_value_part, F_crit_part),
+        "Opérateur": (F_op, p_value_op, F_crit_op),
+        "Pièce*Opérateur": (F_po, p_value_po, F_crit_po),
+    }
+
+    # Décision sur l'inclusion de l'interaction
+    interaction_msg = "incluse" if include_interaction else "exclue (non significative)"
+    interaction_decision = f"Interaction Pièce*Opérateur {interaction_msg} (p-value = {p_value_po:.4f}, α = {alpha:.3f})"
+
     # Interprétation (selon %R&R = %StudyVar de GRR)
     if pct_GRR < 10:
         niveau = "Satisfaisant"
@@ -431,7 +484,16 @@ def gage_rr_anova(df: pd.DataFrame) -> AnovaResult:
         regle = "> 30 % : le processus est inacceptable"
         css = "rr-red"
 
-    conclusion = {"niveau": niveau, "regle": regle, "css": css, "pct_grr": f"{pct_GRR:.2f}%", "ndc": str(ndc)}
+    conclusion = {
+        "niveau": niveau,
+        "regle": regle,
+        "css": css,
+        "pct_grr": f"{pct_GRR:.2f}%",
+        "ndc": str(ndc),
+        "interaction_decision": interaction_decision,
+        "include_interaction": include_interaction,
+        "confidence_level": f"{confidence_level*100:.1f}%"
+    }
 
     metrics = {
         "EV": EV,
@@ -444,17 +506,20 @@ def gage_rr_anova(df: pd.DataFrame) -> AnovaResult:
         "%AV": pct_AV,
         "%PV": pct_PV,
         "ndc": ndc,
+        "confidence_level": confidence_level,
     }
 
     return AnovaResult(
         p=p,
         o=o,
         r=r,
+        confidence_level=confidence_level,
         anova_table=anova_table,
         var_components=var_components,
         study_var=study_var,
         metrics=metrics,
         conclusion=conclusion,
+        f_tests=f_tests,
     )
 
 
@@ -515,6 +580,44 @@ def fig_studyvar(study_var: pd.DataFrame) -> plt.Figure:
     ax.set_title("%Study Variation (6σ)")
     ax.set_ylabel("%")
     ax.set_xlabel("Indicateur")
+    fig.tight_layout()
+    return fig
+
+
+def fig_pvalues(anova_table: pd.DataFrame) -> plt.Figure:
+    """Graphique des p-values pour visualiser la signification statistique"""
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Filtrer les sources avec p-values
+    sources = []
+    p_values = []
+    
+    for idx, row in anova_table.iterrows():
+        if not pd.isna(row['p-value']):
+            sources.append(row['Source'])
+            p_values.append(row['p-value'])
+    
+    x = np.arange(len(sources))
+    bars = ax.bar(x, p_values, color='skyblue', alpha=0.7)
+    
+    # Ligne à alpha = 0.05
+    ax.axhline(y=0.05, color='red', linestyle='--', linewidth=2, label='α = 0.05')
+    
+    # Colorer les barres selon la signification
+    for i, (bar, p_val) in enumerate(zip(bars, p_values)):
+        if p_val < 0.05:
+            bar.set_color('lightcoral')
+            bar.set_alpha(0.9)
+    
+    ax.set_xlabel('Source de variation')
+    ax.set_ylabel('p-value')
+    ax.set_title('Tests d\'hypothèse - p-values')
+    ax.set_xticks(x)
+    ax.set_xticklabels(sources, rotation=45, ha='right')
+    ax.set_ylim([0, max(p_values) * 1.2 if p_values else 1])
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
     fig.tight_layout()
     return fig
 
@@ -586,10 +689,13 @@ def generate_pdf_report(df: pd.DataFrame, res: AnovaResult, tol: Optional[float]
         Paragraph(
             f"- Pièces: <b>{res.p}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
             f"Opérateurs: <b>{res.o}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-            f"Répétitions (essais): <b>{res.r}</b>",
+            f"Répétitions (essais): <b>{res.r}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+            f"Niveau de confiance: <b>{res.conclusion['confidence_level']}</b>",
             styles["Normal"],
         )
     )
+    story.append(Paragraph(f"- <b>{res.conclusion['interaction_decision']}</b>", styles["Normal"]))
+    
     if tol and tol > 0:
         pct_tol = (res.metrics["GRR"] / tol) * 100
         story.append(
@@ -632,7 +738,7 @@ def generate_pdf_report(df: pd.DataFrame, res: AnovaResult, tol: Optional[float]
 
     story.append(Paragraph("4) Table ANOVA", styles["Heading2"]))
     anova_df = res.anova_table.copy()
-    story.append(df_to_rl_table(anova_df.round({"SS": 6, "MS": 6}), max_rows=20))
+    story.append(df_to_rl_table(anova_df.round({"SS": 6, "MS": 6, "F": 4, "p-value": 4}), max_rows=20))
     story.append(Spacer(1, 0.45 * cm))
 
     story.append(Paragraph("5) Composantes de variance", styles["Heading2"]))
@@ -658,11 +764,14 @@ def generate_pdf_report(df: pd.DataFrame, res: AnovaResult, tol: Optional[float]
     story.append(fig_to_rl_image(fig_studyvar(res.study_var), width_cm=17.2))
     story.append(Spacer(1, 0.35 * cm))
     story.append(fig_to_rl_image(fig_contribution(res.var_components), width_cm=17.2))
+    story.append(Spacer(1, 0.35 * cm))
+    story.append(fig_to_rl_image(fig_pvalues(res.anova_table), width_cm=17.2))
 
     story.append(Spacer(1, 0.35 * cm))
     story.append(
         Paragraph(
-            "<span fontSize=8 color='#6b7280'>Note: Calculs basés sur une étude ANOVA à plan équilibré. Study Variation = 6σ.</span>",
+            f"<span fontSize=8 color='#6b7280'>Note: Calculs basés sur une étude ANOVA à plan équilibré. "
+            f"Study Variation = 6σ. Niveau de confiance utilisé: {res.conclusion['confidence_level']}.</span>",
             styles["Normal"],
         )
     )
@@ -679,6 +788,15 @@ def export_excel(df: pd.DataFrame, res: AnovaResult) -> bytes:
         res.var_components.to_excel(writer, sheet_name="Variance", index=False)
         res.anova_table.to_excel(writer, sheet_name="ANOVA", index=False)
         pd.DataFrame([res.metrics]).to_excel(writer, sheet_name="KPIs", index=False)
+        
+        # Ajouter les tests F
+        f_tests_df = pd.DataFrame([
+            {"Source": "Pièce", "F": res.f_tests["Pièce"][0], "p-value": res.f_tests["Pièce"][1], f"F-crit ({res.confidence_level*100:.0f}%)": res.f_tests["Pièce"][2]},
+            {"Source": "Opérateur", "F": res.f_tests["Opérateur"][0], "p-value": res.f_tests["Opérateur"][1], f"F-crit ({res.confidence_level*100:.0f}%)": res.f_tests["Opérateur"][2]},
+            {"Source": "Pièce*Opérateur", "F": res.f_tests["Pièce*Opérateur"][0], "p-value": res.f_tests["Pièce*Opérateur"][1], f"F-crit ({res.confidence_level*100:.0f}%)": res.f_tests["Pièce*Opérateur"][2]},
+        ])
+        f_tests_df.to_excel(writer, sheet_name="Tests_F", index=False)
+        
     return out.getvalue()
 
 
@@ -697,6 +815,15 @@ with st.sidebar:
     st.divider()
     entry_mode = st.radio("Mode de saisie des données", ["Saisie manuelle", "Importer (CSV/Excel)"], horizontal=False)
 
+    st.divider()
+    st.subheader("Paramètres statistiques")
+    confidence_level = st.selectbox(
+        "Niveau de confiance",
+        options=[0.90, 0.95, 0.99],
+        format_func=lambda x: f"{x*100:.0f}%",
+        index=1
+    )
+    
     st.divider()
     tol = st.number_input("Tolérance (optionnel, pour %Tolérance)", min_value=0.0, value=0.0, step=0.1)
 
@@ -807,7 +934,7 @@ ok, errs = validate_dataset(st.session_state["df_data"], int(n_parts), int(n_ops
 if ok:
     df_for_calc = st.session_state["df_data"].copy()
     try:
-        res = gage_rr_anova(df_for_calc)
+        res = gage_rr_anova(df_for_calc, confidence_level)
     except Exception as e:
         res = None
         with tabs[1]:
@@ -819,6 +946,10 @@ with tabs[1]:
     if res is None:
         st.info("Renseignez/importe des données valides pour voir les résultats.")
     else:
+        # Affichage du niveau de confiance
+        st.markdown(f"**Niveau de confiance utilisé : {res.conclusion['confidence_level']}**")
+        st.markdown(f"**{res.conclusion['interaction_decision']}**")
+        
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("EV", _fmt(res.metrics["EV"]), help="Repeatability (6σ)")
         c2.metric("AV", _fmt(res.metrics["AV"]), help="Reproducibility (6σ) incluant interaction")
@@ -850,7 +981,7 @@ with tabs[1]:
             st.dataframe(res.study_var, use_container_width=True, hide_index=True)
 
         with colB:
-            st.markdown("### Table ANOVA")
+            st.markdown("### Table ANOVA (avec tests F)")
             st.dataframe(res.anova_table, use_container_width=True, hide_index=True)
 
         st.markdown("### Composantes de variance")
@@ -875,6 +1006,7 @@ with tabs[2]:
             st.pyplot(fig_studyvar(res.study_var), clear_figure=True)
 
         st.pyplot(fig_contribution(res.var_components), clear_figure=True)
+        st.pyplot(fig_pvalues(res.anova_table), clear_figure=True)
 
 # --- Tab 4 : Rapport / Export
 with tabs[3]:
@@ -894,7 +1026,7 @@ with tabs[3]:
                 mime="application/pdf",
                 use_container_width=True,
             )
-            st.markdown("<div class='small-note'>Le PDF inclut: paramètres, conclusion, tableaux ANOVA/variance, et graphes.</div>", unsafe_allow_html=True)
+            st.markdown("<div class='small-note'>Le PDF inclut: paramètres, conclusion, tableaux ANOVA/variance, tests F, et graphes.</div>", unsafe_allow_html=True)
 
         with col2:
             st.markdown("#### 📊 Export Excel (données + résultats)")
@@ -920,6 +1052,6 @@ with tabs[3]:
 st.markdown("<hr/>", unsafe_allow_html=True)
 st.markdown(
     "<div class='small-note'>⚠️ Cette app suppose un plan <b>équilibré</b> (même nombre d'essais pour chaque couple Pièce×Opérateur). "
-    "Pour des plans non équilibrés, il faut une approche ANOVA plus générale (modèle mixte).</div>",
+    f"Calculs effectués avec un niveau de confiance de {confidence_level*100:.0f}% pour les tests d'hypothèse.</div>",
     unsafe_allow_html=True,
 )
