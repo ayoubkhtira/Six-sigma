@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 import io
 import math
@@ -106,7 +105,7 @@ def normalize_imported_columns(df: pd.DataFrame) -> pd.DataFrame:
     colmap = {}
     for c in df.columns:
         key = str(c).strip().lower()
-        if key in {"pièce", "piece", "part"}:
+        if key in {"pièce", "piece", "part", "n° de la pièce", "no de la piece", "numéro pièce"}:
             colmap[c] = "Pièce"
         elif key in {"opérateur", "operateur", "operator"}:
             colmap[c] = "Opérateur"
@@ -115,6 +114,104 @@ def normalize_imported_columns(df: pd.DataFrame) -> pd.DataFrame:
         elif key in {"mesure", "measurement", "valeur", "value", "y"}:
             colmap[c] = "Mesure"
     return df.rename(columns=colmap).copy()
+
+
+def convert_wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convertit un format large (comme le template) en format long.
+    
+    Format attendu:
+    - Première ligne: noms d'opérateurs avec répétition (ex: OPERATEUR 1, OPERATEUR 1, OPERATEUR 1)
+    - Deuxième ligne: numéros d'essai (ESSAI 1, ESSAI 2, ESSAI 3)
+    - Colonne A: numéros de pièces
+    
+    Retourne un DataFrame avec colonnes: Pièce, Opérateur, Essai, Mesure
+    """
+    df = df.copy()
+    
+    # Supprimer les lignes vides
+    df = df.dropna(how='all')
+    
+    # Si le DataFrame a un MultiIndex (lignes d'en-tête fusionnées), le gérer
+    if isinstance(df.columns, pd.MultiIndex):
+        # Extraire les noms d'opérateurs et essais du MultiIndex
+        operators = []
+        trials = []
+        
+        for col in df.columns:
+            if pd.isna(col[0]) or str(col[0]).strip() == '':
+                operators.append(operators[-1] if operators else 'Opérateur 1')
+            else:
+                operators.append(str(col[0]).strip())
+            trials.append(str(col[1]).strip() if len(col) > 1 and not pd.isna(col[1]) else '1')
+    else:
+        # Sinon, lire depuis les deux premières lignes
+        if len(df) < 2:
+            raise ValueError("Format de template invalide: besoin d'au moins 2 lignes d'en-tête")
+        
+        # Les deux premières lignes contiennent les en-têtes
+        operators_row = df.iloc[0].fillna(method='ffill')
+        trials_row = df.iloc[1]
+        
+        # Extraire les données à partir de la 3ème ligne
+        data_df = df.iloc[2:].reset_index(drop=True)
+        
+        # Préparer les listes d'opérateurs et essais
+        operators = []
+        trials = []
+        
+        for i in range(len(operators_row)):
+            if i == 0:  # Première colonne: numéro de pièce
+                operators.append('Opérateur')
+                trials.append('Essai')
+            else:
+                operators.append(str(operators_row.iloc[i]).strip())
+                trials.append(str(trials_row.iloc[i]).strip())
+        
+        # Renommer les colonnes
+        data_df.columns = pd.MultiIndex.from_tuples(zip(operators, trials))
+        df = data_df
+    
+    # Convertir en format long
+    long_rows = []
+    
+    for idx, row in df.iterrows():
+        piece_num = str(row.iloc[0]).strip()
+        if not piece_num or piece_num.lower() in ['pièce', 'piece', 'part']:
+            continue
+            
+        # Pour chaque colonne de mesure
+        for i in range(1, len(row)):
+            if pd.isna(row.iloc[i]):
+                continue
+                
+            op_name = operators[i]
+            trial_num = trials[i]
+            
+            # Extraire le numéro d'essai (ex: "ESSAI 1" -> 1)
+            trial_val = 1
+            if isinstance(trial_num, str):
+                for part in trial_num.split():
+                    if part.isdigit():
+                        trial_val = int(part)
+                        break
+            
+            # Extraire le nom d'opérateur (ex: "OPERATEUR 1" -> "O1")
+            op_val = op_name
+            if isinstance(op_name, str):
+                for part in op_name.split():
+                    if part.isdigit():
+                        op_val = f"O{part}"
+                        break
+            
+            long_rows.append({
+                'Pièce': piece_num,
+                'Opérateur': op_val,
+                'Essai': trial_val,
+                'Mesure': float(row.iloc[i])
+            })
+    
+    return pd.DataFrame(long_rows)
 
 
 def validate_dataset(df: pd.DataFrame, n_parts: int, n_ops: int, n_trials: int) -> Tuple[bool, List[str]]:
@@ -595,7 +692,7 @@ with st.sidebar:
     st.header("Paramètres")
     n_parts = st.number_input("Nombre de pièces", min_value=2, max_value=50, value=10, step=1)
     n_ops = st.number_input("Nombre d'opérateurs", min_value=2, max_value=20, value=3, step=1)
-    n_trials = st.number_input("Nombre de mesures (essais) par opérateur & pièce", min_value=2, max_value=10, value=2, step=1)
+    n_trials = st.number_input("Nombre de mesures (essais) par opérateur & pièce", min_value=2, max_value=10, value=3, step=1)
 
     st.divider()
     entry_mode = st.radio("Mode de saisie des données", ["Saisie manuelle", "Importer (CSV/Excel)"], horizontal=False)
@@ -605,7 +702,9 @@ with st.sidebar:
 
     st.divider()
     st.markdown(
-        "<div class='small-note'>💡 <b>Format attendu</b> (plan équilibré) : colonnes <code>Pièce</code>, <code>Opérateur</code>, <code>Essai</code>, <code>Mesure</code>.</div>",
+        "<div class='small-note'>💡 <b>Formats acceptés</b>:<br>"
+        "- <b>Format long</b>: colonnes Pièce, Opérateur, Essai, Mesure<br>"
+        "- <b>Format large</b>: template avec opérateurs en colonnes (comme le fichier TEMPLATE CAGE RR.xlsx)</div>",
         unsafe_allow_html=True,
     )
 
@@ -635,17 +734,47 @@ with tabs[0]:
         st.download_button("⬇️ Télécharger un template CSV", data=template_csv, file_name="template_gage_rr.csv", mime="text/csv")
 
     else:
-        st.markdown("Importez un fichier **CSV** ou **Excel**. Colonnes acceptées FR/EN (Part/Operator/Trial/Measurement).")
+        st.markdown("Importez un fichier **CSV** ou **Excel**.")
+        st.markdown("**Formats acceptés:**")
+        st.markdown("- **Format long**: colonnes Pièce, Opérateur, Essai, Mesure")
+        st.markdown("- **Format large (template)**: opérateurs en colonnes avec essais en sous-colonnes")
+        
         upl = st.file_uploader("Importer", type=["csv", "xlsx"])
 
         if upl is not None:
             try:
                 if upl.name.lower().endswith(".csv"):
-                    df_imp = pd.read_csv(upl)
+                    df_imp = pd.read_csv(upl, header=None)
                 else:
-                    df_imp = pd.read_excel(upl)
-                df_imp = normalize_imported_columns(df_imp)
+                    # Essayer de lire avec header=[0,1] pour les templates avec MultiIndex
+                    try:
+                        df_imp = pd.read_excel(upl, header=[0, 1])
+                    except:
+                        df_imp = pd.read_excel(upl, header=None)
+                
+                # Essayer de détecter le format et convertir
+                try:
+                    # Si le fichier a plus de 4 colonnes, c'est probablement un format large
+                    if df_imp.shape[1] > 4:
+                        df_imp = convert_wide_to_long(df_imp)
+                        st.success("✅ Format large détecté et converti en format long")
+                    else:
+                        # Essayer de lire comme format long
+                        df_imp = pd.read_excel(upl) if upl.name.lower().endswith(".xlsx") else pd.read_csv(upl)
+                        df_imp = normalize_imported_columns(df_imp)
+                        st.success("✅ Format long détecté")
+                except Exception as conv_e:
+                    st.error(f"Erreur de conversion du format: {conv_e}")
+                    # Revenir à la lecture normale
+                    if upl.name.lower().endswith(".csv"):
+                        df_imp = pd.read_csv(upl)
+                    else:
+                        df_imp = pd.read_excel(upl)
+                    df_imp = normalize_imported_columns(df_imp)
+                
                 st.session_state["df_data"] = df_imp
+                st.rerun()
+                
             except Exception as e:
                 st.error(f"Impossible de lire le fichier: {e}")
 
