@@ -124,97 +124,124 @@ def convert_wide_to_long(df: pd.DataFrame) -> pd.DataFrame:
     Convertit un format large (comme le template) en format long.
     
     Format attendu:
-    - Première ligne: noms d'opérateurs avec répétition (ex: OPERATEUR 1, OPERATEUR 1, OPERATEUR 1)
-    - Deuxième ligne: numéros d'essai (ESSAI 1, ESSAI 2, ESSAI 3)
-    - Colonne A: numéros de pièces
-    
-    Retourne un DataFrame avec colonnes: Pièce, Opérateur, Essai, Mesure
+    - Ligne 0: noms d'opérateurs (ex: OPERATEUR 1, OPERATEUR 1, OPERATEUR 1, OPERATEUR 2...)
+    - Ligne 1: numéros d'essai (ESSAI 1, ESSAI 2, ESSAI 3)
+    - Lignes suivantes: données (pièces 1 à 10)
     """
-    df = df.copy()
+    # Créer une copie
+    df_copy = df.copy()
     
-    # Supprimer les lignes vides
-    df = df.dropna(how='all')
-    
-    # Si le DataFrame a un MultiIndex (lignes d'en-tête fusionnées), le gérer
-    if isinstance(df.columns, pd.MultiIndex):
-        # Extraire les noms d'opérateurs et essais du MultiIndex
+    # Si le DataFrame a déjà un MultiIndex (header=[0,1]), le convertir
+    if isinstance(df_copy.columns, pd.MultiIndex):
+        # Extraire les opérateurs et essais du MultiIndex
         operators = []
         trials = []
         
-        for col in df.columns:
-            if pd.isna(col[0]) or str(col[0]).strip() == '':
-                operators.append(operators[-1] if operators else 'Opérateur 1')
+        for col in df_copy.columns:
+            op_name = str(col[0]) if len(col) > 0 and not pd.isna(col[0]) else ""
+            trial_name = str(col[1]) if len(col) > 1 and not pd.isna(col[1]) else ""
+            
+            if op_name == "" or op_name.lower() in ["nan", "none"]:
+                # Utiliser le dernier opérateur
+                operators.append(operators[-1] if operators else "OPERATEUR 1")
             else:
-                operators.append(str(col[0]).strip())
-            trials.append(str(col[1]).strip() if len(col) > 1 and not pd.isna(col[1]) else '1')
+                operators.append(op_name)
+            
+            trials.append(trial_name)
     else:
-        # Sinon, lire depuis les deux premières lignes
-        if len(df) < 2:
-            raise ValueError("Format de template invalide: besoin d'au moins 2 lignes d'en-tête")
-        
+        # Sinon, traiter comme un DataFrame régulier
         # Les deux premières lignes contiennent les en-têtes
-        operators_row = df.iloc[0].fillna(method='ffill')
-        trials_row = df.iloc[1]
+        if len(df_copy) < 2:
+            raise ValueError("Le fichier doit contenir au moins 2 lignes d'en-tête")
         
-        # Extraire les données à partir de la 3ème ligne
-        data_df = df.iloc[2:].reset_index(drop=True)
+        # Extraire les opérateurs (première ligne, sauf première colonne)
+        operators_row = df_copy.iloc[0, 1:].fillna(method='ffill').tolist()
         
-        # Préparer les listes d'opérateurs et essais
-        operators = []
-        trials = []
+        # Extraire les essais (deuxième ligne, sauf première colonne)
+        trials_row = df_copy.iloc[1, 1:].tolist()
         
+        # Les données commencent à la ligne 2
+        data_values = df_copy.iloc[2:, :].reset_index(drop=True)
+        
+        # Reconstruire le DataFrame avec MultiIndex
+        columns = [(df_copy.columns[0], "")]
         for i in range(len(operators_row)):
-            if i == 0:  # Première colonne: numéro de pièce
-                operators.append('Opérateur')
-                trials.append('Essai')
-            else:
-                operators.append(str(operators_row.iloc[i]).strip())
-                trials.append(str(trials_row.iloc[i]).strip())
+            columns.append((str(operators_row[i]), str(trials_row[i])))
         
-        # Renommer les colonnes
-        data_df.columns = pd.MultiIndex.from_tuples(zip(operators, trials))
-        df = data_df
+        df_copy = pd.DataFrame(
+            data_values.values,
+            columns=pd.MultiIndex.from_tuples(columns)
+        )
+        
+        operators = [col[0] for col in columns[1:]]
+        trials = [col[1] for col in columns[1:]]
     
     # Convertir en format long
     long_rows = []
     
-    for idx, row in df.iterrows():
-        piece_num = str(row.iloc[0]).strip()
-        if not piece_num or piece_num.lower() in ['pièce', 'piece', 'part']:
+    for idx in range(len(df_copy)):
+        # Première colonne contient le numéro de pièce
+        piece_val = df_copy.iloc[idx, 0]
+        if pd.isna(piece_val) or str(piece_val).strip() == "":
             continue
-            
+        
+        piece_num = str(piece_val).strip()
+        
         # Pour chaque colonne de mesure
-        for i in range(1, len(row)):
-            if pd.isna(row.iloc[i]):
+        for i in range(1, len(df_copy.columns)):
+            measure_val = df_copy.iloc[idx, i]
+            if pd.isna(measure_val):
                 continue
-                
-            op_name = operators[i]
-            trial_num = trials[i]
             
-            # Extraire le numéro d'essai (ex: "ESSAI 1" -> 1)
-            trial_val = 1
-            if isinstance(trial_num, str):
-                for part in trial_num.split():
-                    if part.isdigit():
-                        trial_val = int(part)
-                        break
+            # Extraire le numéro d'opérateur
+            op_name = operators[i-1] if i-1 < len(operators) else f"OPERATEUR {i}"
+            op_num = "1"
+            for part in str(op_name).split():
+                if part.isdigit():
+                    op_num = part
+                    break
             
-            # Extraire le nom d'opérateur (ex: "OPERATEUR 1" -> "O1")
-            op_val = op_name
-            if isinstance(op_name, str):
-                for part in op_name.split():
-                    if part.isdigit():
-                        op_val = f"O{part}"
-                        break
+            # Extraire le numéro d'essai
+            trial_name = trials[i-1] if i-1 < len(trials) else f"ESSAI {i}"
+            trial_num = "1"
+            for part in str(trial_name).split():
+                if part.isdigit():
+                    trial_num = part
+                    break
             
             long_rows.append({
-                'Pièce': piece_num,
-                'Opérateur': op_val,
-                'Essai': trial_val,
-                'Mesure': float(row.iloc[i])
+                "Pièce": piece_num,
+                "Opérateur": f"O{op_num}",
+                "Essai": int(trial_num),
+                "Mesure": float(measure_val)
             })
     
-    return pd.DataFrame(long_rows)
+    result_df = pd.DataFrame(long_rows)
+    
+    # S'assurer que les colonnes sont dans le bon ordre
+    if not result_df.empty:
+        result_df = result_df.sort_values(["Pièce", "Opérateur", "Essai"])
+    
+    return result_df
+
+
+def detect_and_convert_format(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Détecte automatiquement le format et convertit en format long si nécessaire.
+    """
+    # Si déjà en format long (4 colonnes avec les bons noms)
+    if len(df.columns) == 4:
+        required_cols = {"Pièce", "Opérateur", "Essai", "Mesure"}
+        if required_cols.issubset(set(df.columns)):
+            return df
+    
+    # Sinon, essayer de convertir du format large
+    try:
+        return convert_wide_to_long(df)
+    except Exception as e:
+        st.error(f"Erreur lors de la conversion du format: {str(e)}")
+        # Essayer de normaliser les colonnes
+        return normalize_imported_columns(df)
 
 
 def validate_dataset(df: pd.DataFrame, n_parts: int, n_ops: int, n_trials: int) -> Tuple[bool, List[str]]:
@@ -871,41 +898,53 @@ with tabs[0]:
         if upl is not None:
             try:
                 if upl.name.lower().endswith(".csv"):
-                    df_imp = pd.read_csv(upl, header=None)
+                    # Essayer plusieurs méthodes pour lire les CSV
+                    try:
+                        df_imp = pd.read_csv(upl, header=[0, 1])
+                    except:
+                        df_imp = pd.read_csv(upl, header=None)
                 else:
-                    # Essayer de lire avec header=[0,1] pour les templates avec MultiIndex
+                    # Pour Excel, essayer plusieurs méthodes
                     try:
                         df_imp = pd.read_excel(upl, header=[0, 1])
                     except:
-                        df_imp = pd.read_excel(upl, header=None)
+                        try:
+                            df_imp = pd.read_excel(upl, header=None)
+                        except:
+                            df_imp = pd.read_excel(upl)
                 
-                # Essayer de détecter le format et convertir
-                try:
-                    # Si le fichier a plus de 4 colonnes, c'est probablement un format large
-                    if df_imp.shape[1] > 4:
-                        df_imp = convert_wide_to_long(df_imp)
-                        st.success("✅ Format large détecté et converti en format long")
-                    else:
-                        # Essayer de lire comme format long
-                        df_imp = pd.read_excel(upl) if upl.name.lower().endswith(".xlsx") else pd.read_csv(upl)
-                        df_imp = normalize_imported_columns(df_imp)
-                        st.success("✅ Format long détecté")
-                except Exception as conv_e:
-                    st.error(f"Erreur de conversion du format: {conv_e}")
-                    # Revenir à la lecture normale
-                    if upl.name.lower().endswith(".csv"):
-                        df_imp = pd.read_csv(upl)
-                    else:
-                        df_imp = pd.read_excel(upl)
-                    df_imp = normalize_imported_columns(df_imp)
+                # Détecter et convertir le format
+                df_imp = detect_and_convert_format(df_imp)
                 
+                # Afficher un aperçu des données converties
+                st.success(f"✅ Fichier importé avec succès ! {len(df_imp)} lignes détectées.")
+                
+                if len(df_imp) > 0:
+                    st.markdown("**Aperçu des données converties :**")
+                    st.dataframe(df_imp.head(), use_container_width=True)
+                
+                # Mettre à jour les données de session
                 st.session_state["df_data"] = df_imp
-                st.rerun()
                 
+                # Mettre à jour les paramètres basés sur les données importées
+                if not df_imp.empty:
+                    parts_count = len(df_imp["Pièce"].unique())
+                    ops_count = len(df_imp["Opérateur"].unique())
+                    trials_count = int(len(df_imp) / (parts_count * ops_count))
+                    
+                    # Mettre à jour les valeurs dans la sidebar via session_state
+                    st.session_state["n_parts"] = parts_count
+                    st.session_state["n_ops"] = ops_count
+                    st.session_state["n_trials"] = trials_count
+                    
+                    st.info(f"Paramètres détectés : {parts_count} pièces, {ops_count} opérateurs, {trials_count} essais")
+                    
             except Exception as e:
-                st.error(f"Impossible de lire le fichier: {e}")
+                st.error(f"Erreur lors de l'import du fichier : {str(e)}")
+                st.info("Veuillez vérifier que le fichier est au bon format.")
 
-        st.markdown("Aperçu (vous pouvez corriger/compléter si besoin) :")
+        # Afficher l'éditeur de données
+        st.markdown("### Aperçu (vous pouvez corriger/compléter si besoin) :")
         edited = st.data_editor(
             st.session_state["df_data"],
             use_container_width=True,
