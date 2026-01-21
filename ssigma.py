@@ -4,7 +4,6 @@ import numpy as np
 from io import BytesIO
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 # ---------- CONFIG & STYLE ----------
 st.set_page_config(
@@ -50,7 +49,8 @@ header, .css-18ni7ap, .css-1avcm0n, .css-1d391kg {
 .gradient-title {
     background: linear-gradient(90deg,#38bdf8,#a855f7,#f97316);
     -webkit-background-clip: text;
-    color: transparent;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
 }
 .metric-badge {
     font-size: 0.8rem;
@@ -80,13 +80,31 @@ def build_long_from_template(df, n_operators, n_parts, n_reps):
     """
     long_rows = []
     
+    # Vérifier que le DataFrame a assez de colonnes
+    expected_cols = 1 + (n_operators * n_reps)
+    if len(df.columns) < expected_cols:
+        st.error(f"❌ Le fichier doit contenir au moins {expected_cols} colonnes (1 pour les pièces + {n_operators} opérateurs × {n_reps} répétitions). Trouvé: {len(df.columns)} colonnes.")
+        return None
+    
+    # Vérifier que le DataFrame a assez de lignes
+    if len(df) < n_parts:
+        st.error(f"❌ Le fichier doit contenir au moins {n_parts} lignes (pièces). Trouvé: {len(df)} lignes.")
+        return None
+    
     for idx, row in df.iterrows():
-        part = int(row.iloc[0])
+        if idx >= n_parts:
+            break
+        
+        try:
+            part = int(row.iloc[0])
+        except (ValueError, TypeError):
+            st.error(f"❌ Erreur ligne {idx + 1}: La colonne A doit contenir des numéros de pièce valides.")
+            return None
+        
         for op_idx in range(n_operators):
             for rep_idx in range(n_reps):
                 col_index = 1 + op_idx * n_reps + rep_idx
-                # Vérifier si l'index de colonne existe
-                if col_index < len(row):
+                try:
                     value = float(row.iloc[col_index])
                     long_rows.append({
                         "Part": part,
@@ -94,9 +112,13 @@ def build_long_from_template(df, n_operators, n_parts, n_reps):
                         "Rep": rep_idx + 1,
                         "Value": value
                     })
-                else:
-                    st.error(f"Colonne manquante dans le fichier. Vérifiez le nombre d'opérateurs et de répétitions.")
+                except (ValueError, TypeError):
+                    st.error(f"❌ Erreur ligne {idx + 1}, colonne {col_index + 1}: Valeur non numérique détectée.")
                     return None
+                except IndexError:
+                    st.error(f"❌ Erreur: Colonne {col_index + 1} manquante dans le fichier.")
+                    return None
+    
     return pd.DataFrame(long_rows)
 
 
@@ -107,8 +129,8 @@ def gage_rr_anova(df_long, alpha=0.05, confidence_coefficient=5.15):
     """
     grand_mean = df_long["Value"].mean()
     
-    parts = df_long["Part"].unique()
-    ops = df_long["Operator"].unique()
+    parts = sorted(df_long["Part"].unique())
+    ops = sorted(df_long["Operator"].unique())
     p = len(parts)
     o = len(ops)
     r = df_long["Rep"].nunique()
@@ -140,38 +162,38 @@ def gage_rr_anova(df_long, alpha=0.05, confidence_coefficient=5.15):
     
     # Composantes de variance (éviter les valeurs négatives)
     var_repeat = max(ms_e, 0)
-    var_op = max((ms_o - ms_po) / (p * r), 0) if ms_o > ms_po else 0
-    var_part = max((ms_p - ms_po) / (o * r), 0) if ms_p > ms_po else 0
-    var_interaction = max((ms_po - ms_e) / r, 0) if ms_po > ms_e else 0
+    var_op = max((ms_o - ms_po) / (p * r), 0) if (p * r) > 0 else 0
+    var_part = max((ms_p - ms_po) / (o * r), 0) if (o * r) > 0 else 0
+    var_interaction = max((ms_po - ms_e) / r, 0) if r > 0 else 0
     
     var_grr = var_repeat + var_op + var_interaction
     var_total = var_grr + var_part
     
     # Écart-types (sigma)
-    sd_repeat = np.sqrt(var_repeat) if var_repeat > 0 else 0
-    sd_op = np.sqrt(var_op) if var_op > 0 else 0
-    sd_interaction = np.sqrt(var_interaction) if var_interaction > 0 else 0
-    sd_grr = np.sqrt(var_grr) if var_grr > 0 else 0
-    sd_part = np.sqrt(var_part) if var_part > 0 else 0
-    sd_total = np.sqrt(var_total) if var_total > 0 else 0
+    sd_repeat = np.sqrt(var_repeat)
+    sd_op = np.sqrt(var_op)
+    sd_interaction = np.sqrt(var_interaction)
+    sd_grr = np.sqrt(var_grr)
+    sd_part = np.sqrt(var_part)
+    sd_total = np.sqrt(var_total)
     
     # FACTEUR de coefficient de confiance pour la variation d'étude
     FACTOR = confidence_coefficient
     
     # Variation d'étude (Study Variation = coefficient × sigma)
-    EV = sd_repeat * FACTOR  # Répétabilité
-    AV = sd_op * FACTOR  # Reproductibilité
-    RR = sd_grr * FACTOR  # Total Gage R&R
-    Vp = sd_part * FACTOR  # Variation pièce
-    VT = sd_total * FACTOR  # Variation totale
+    EV = sd_repeat * FACTOR
+    AV = sd_op * FACTOR
+    RR = sd_grr * FACTOR
+    Vp = sd_part * FACTOR
+    VT = sd_total * FACTOR
     
-    # Pourcentages par rapport à VT
+    # Pourcentages par rapport à VT (éviter division par zéro)
     pct_grr = 100 * RR / VT if VT > 0 else 0
     pct_repeat = 100 * EV / VT if VT > 0 else 0
     pct_op = 100 * AV / VT if VT > 0 else 0
     pct_part = 100 * Vp / VT if VT > 0 else 0
     
-    # Pourcentages par rapport aux variances (pour compatibilité)
+    # Pourcentages par rapport aux variances (sigma)
     pct_grr_var = 100 * sd_grr / sd_total if sd_total > 0 else 0
     pct_repeat_var = 100 * sd_repeat / sd_total if sd_total > 0 else 0
     pct_op_var = 100 * sd_op / sd_total if sd_total > 0 else 0
@@ -187,6 +209,7 @@ def gage_rr_anova(df_long, alpha=0.05, confidence_coefficient=5.15):
         "var_total": var_total,
         "sd_repeat": sd_repeat,
         "sd_op": sd_op,
+        "sd_interaction": sd_interaction,
         "sd_grr": sd_grr,
         "sd_part": sd_part,
         "sd_total": sd_total,
@@ -265,7 +288,7 @@ def generate_report(results):
    ────────────────────────────────────────────────────────────────────
    Répétabilité          {results['var_repeat']:10.6f}   {results['sd_repeat']:10.6f}      {results['pct_repeat_var']:6.2f}%
    Reproductibilité      {results['var_op']:10.6f}   {results['sd_op']:10.6f}      {results['pct_op_var']:6.2f}%
-   Interaction           {results['var_interaction']:10.6f}   {np.sqrt(results['var_interaction']):10.6f}
+   Interaction           {results['var_interaction']:10.6f}   {results['sd_interaction']:10.6f}
    ────────────────────────────────────────────────────────────────────
    Total Gage R&R        {results['var_grr']:10.6f}   {results['sd_grr']:10.6f}      {results['pct_grr_var']:6.2f}%
    Pièce                 {results['var_part']:10.6f}   {results['sd_part']:10.6f}      {results['pct_part_var']:6.2f}%
@@ -361,21 +384,18 @@ with st.sidebar:
     st.caption("• Colonnes H-J : Opérateur 3 (essais 1-3)")
     st.caption("• Cellule B2 = Essai 1, Op 1, Pièce 1")
 
-uploaded_file = st.file_uploader("📂 Importer le fichier Excel Gage R&R", type=["xlsx"])
+uploaded_file = st.file_uploader("📂 Importer le fichier Excel Gage R&R", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
     try:
         raw_df = pd.read_excel(uploaded_file)
     except Exception as e:
-        st.error(f"Erreur lors de la lecture du fichier : {e}")
+        st.error(f"❌ Erreur lors de la lecture du fichier : {e}")
         st.stop()
 
-    try:
-        df_long = build_long_from_template(raw_df, n_operators, n_parts, n_reps)
-        if df_long is None:
-            st.stop()
-    except Exception as e:
-        st.error(f"Erreur lors de la conversion du template : {e}")
+    df_long = build_long_from_template(raw_df, n_operators, n_parts, n_reps)
+    
+    if df_long is None or df_long.empty:
         st.stop()
 
     results = gage_rr_anova(df_long, alpha=1 - alpha, confidence_coefficient=confidence_coefficient)
@@ -713,7 +733,7 @@ if uploaded_file is not None:
             "Écart-type (σ)": [
                 f"{results['sd_repeat']:.6f}",
                 f"{results['sd_op']:.6f}",
-                f"{np.sqrt(results['var_interaction']):.6f}",
+                f"{results['sd_interaction']:.6f}",
                 f"{results['sd_grr']:.6f}",
                 f"{results['sd_part']:.6f}",
                 f"{results['sd_total']:.6f}",
@@ -810,7 +830,7 @@ else:
     
     **Exemple :** Cellule B2 = Mesure de l'essai 1, opérateur 1, pièce 1
     
-    ### 🎯 Résultats attendus avec votre template
+    ### 🎯 Résultats attendus avec le template
     
     - **R&R** = 0.193
     - **EV (Répétabilité)** = 0.175
