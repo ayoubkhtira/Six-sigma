@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
-from scipy.stats import f
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -73,8 +72,11 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 def build_long_from_template(df, n_operators, n_parts, n_reps):
     """
-    Construit un DataFrame long format à partir du template simple.
-    Structure: première colonne = pièces, puis 3 colonnes par opérateur (3 mesures).
+    Construit un DataFrame long format à partir du template.
+    Structure: Colonne A = pièces
+              Colonnes B,C,D = Opérateur 1 (essais 1,2,3)
+              Colonnes E,F,G = Opérateur 2 (essais 1,2,3)
+              Colonnes H,I,J = Opérateur 3 (essais 1,2,3)
     """
     long_rows = []
     
@@ -96,7 +98,7 @@ def build_long_from_template(df, n_operators, n_parts, n_reps):
 def gage_rr_anova(df_long, alpha=0.05):
     """
     Calcul Gage R&R par méthode ANOVA.
-    Retourne: %R&R basé sur %Tolérance (5.15 * sigma / tolérance * 100)
+    Utilise le facteur 5.15 pour la variation d'étude (Study Variation).
     """
     grand_mean = df_long["Value"].mean()
     
@@ -140,7 +142,7 @@ def gage_rr_anova(df_long, alpha=0.05):
     var_grr = var_repeat + var_op + var_interaction
     var_total = var_grr + var_part
     
-    # Écart-types
+    # Écart-types (sigma)
     sd_repeat = np.sqrt(var_repeat)
     sd_op = np.sqrt(var_op)
     sd_interaction = np.sqrt(var_interaction)
@@ -148,17 +150,27 @@ def gage_rr_anova(df_long, alpha=0.05):
     sd_part = np.sqrt(var_part)
     sd_total = np.sqrt(var_total)
     
-    # Calcul du %R&R basé sur la tolérance (méthode standard)
-    # Tolérance = range des pièces ou 6 * sigma_part
-    tolerance = 6 * sd_part
-    study_var_grr = 5.15 * sd_grr
-    pct_grr_tolerance = 100 * study_var_grr / tolerance if tolerance > 0 else np.nan
+    # FACTEUR 5.15 pour la variation d'étude
+    FACTOR = 5.15
     
-    # % par rapport à la variation totale
-    pct_grr = 100 * sd_grr / sd_total if sd_total > 0 else np.nan
-    pct_repeat = 100 * sd_repeat / sd_total if sd_total > 0 else np.nan
-    pct_op = 100 * sd_op / sd_total if sd_total > 0 else np.nan
-    pct_part = 100 * sd_part / sd_total if sd_total > 0 else np.nan
+    # Variation d'étude (Study Variation = 5.15 × sigma)
+    EV = sd_repeat * FACTOR  # Répétabilité
+    AV = sd_op * FACTOR  # Reproductibilité
+    RR = sd_grr * FACTOR  # Total Gage R&R
+    Vp = sd_part * FACTOR  # Variation pièce
+    VT = sd_total * FACTOR  # Variation totale
+    
+    # Pourcentages par rapport à VT
+    pct_grr = 100 * RR / VT if VT > 0 else np.nan
+    pct_repeat = 100 * EV / VT if VT > 0 else np.nan
+    pct_op = 100 * AV / VT if VT > 0 else np.nan
+    pct_part = 100 * Vp / VT if VT > 0 else np.nan
+    
+    # Pourcentages par rapport aux variances (pour compatibilité)
+    pct_grr_var = 100 * sd_grr / sd_total if sd_total > 0 else np.nan
+    pct_repeat_var = 100 * sd_repeat / sd_total if sd_total > 0 else np.nan
+    pct_op_var = 100 * sd_op / sd_total if sd_total > 0 else np.nan
+    pct_part_var = 100 * sd_part / sd_total if sd_total > 0 else np.nan
     
     return {
         "grand_mean": grand_mean,
@@ -173,13 +185,21 @@ def gage_rr_anova(df_long, alpha=0.05):
         "sd_grr": sd_grr,
         "sd_part": sd_part,
         "sd_total": sd_total,
+        # Valeurs avec facteur 5.15
+        "EV": EV,
+        "AV": AV,
+        "RR": RR,
+        "Vp": Vp,
+        "VT": VT,
         "pct_grr": pct_grr,
-        "pct_grr_tolerance": pct_grr_tolerance,
         "pct_repeat": pct_repeat,
         "pct_op": pct_op,
         "pct_part": pct_part,
-        "tolerance": tolerance,
-        "study_var_grr": study_var_grr,
+        # Pourcentages par variance (sigma)
+        "pct_grr_var": pct_grr_var,
+        "pct_repeat_var": pct_repeat_var,
+        "pct_op_var": pct_op_var,
+        "pct_part_var": pct_part_var,
         "df_long": df_long,
         "df": {
             "Part": df_p,
@@ -215,47 +235,59 @@ def interpret_grr(pct_grr):
 def generate_report(results):
     """Génère un rapport détaillé en format texte."""
     report = f"""
-═══════════════════════════════════════════════════════════
-               RAPPORT GAGE R&R - ANALYSE MSA
-═══════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════
+                 RAPPORT GAGE R&R - ANALYSE MSA
+═══════════════════════════════════════════════════════════════════
 
 1. STATISTIQUES DESCRIPTIVES
    • Moyenne générale : {results['grand_mean']:.4f}
-   • Tolérance estimée : {results['tolerance']:.4f}
    
 2. ANALYSE DE VARIANCE (ANOVA)
+   
    Source               SS           DF        MS
-   ──────────────────────────────────────────────────
+   ──────────────────────────────────────────────────────────
    Pièce            {results['ss']['Part']:10.6f}    {results['df']['Part']:3d}   {results['ms']['Part']:10.6f}
    Opérateur        {results['ss']['Operator']:10.6f}    {results['df']['Operator']:3d}   {results['ms']['Operator']:10.6f}
    Part*Operator    {results['ss']['Part*Operator']:10.6f}    {results['df']['Part*Operator']:3d}   {results['ms']['Part*Operator']:10.6f}
    Répétabilité     {results['ss']['Repeatability']:10.6f}    {results['df']['Repeatability']:3d}   {results['ms']['Repeatability']:10.6f}
    Total            {results['ss']['Total']:10.6f}
    
-3. COMPOSANTES DE VARIANCE
-   Source                    Variance      Écart-type    %Total
-   ─────────────────────────────────────────────────────────────
-   Répétabilité          {results['var_repeat']:10.6f}   {results['sd_repeat']:10.6f}   {results['pct_repeat']:6.2f}%
-   Reproductibilité      {results['var_op']:10.6f}   {results['sd_op']:10.6f}   {results['pct_op']:6.2f}%
-   Interaction           {results['var_interaction']:10.6f}   {np.sqrt(results['var_interaction']):10.6f}   
-   ─────────────────────────────────────────────────────────────
-   Total Gage R&R        {results['var_grr']:10.6f}   {results['sd_grr']:10.6f}   {results['pct_grr']:6.2f}%
-   Pièce                 {results['var_part']:10.6f}   {results['sd_part']:10.6f}   {results['pct_part']:6.2f}%
-   ─────────────────────────────────────────────────────────────
-   Variation totale      {results['var_total']:10.6f}   {results['sd_total']:10.6f}  100.00%
-
-4. ÉVALUATION DU SYSTÈME DE MESURE
-   • %R&R (variation totale) : {results['pct_grr']:.2f}%
-   • %R&R (tolérance)        : {results['pct_grr_tolerance']:.2f}%
-   • Variation d'étude       : {results['study_var_grr']:.4f}
+3. COMPOSANTES DE VARIANCE (Sigma)
    
-5. INTERPRÉTATION
-   {interpret_grr(results['pct_grr_tolerance'])[0]}
+   Source                    Variance      Écart-type    %Contribution
+   ────────────────────────────────────────────────────────────────────
+   Répétabilité          {results['var_repeat']:10.6f}   {results['sd_repeat']:10.6f}      {results['pct_repeat_var']:6.2f}%
+   Reproductibilité      {results['var_op']:10.6f}   {results['sd_op']:10.6f}      {results['pct_op_var']:6.2f}%
+   Interaction           {results['var_interaction']:10.6f}   {np.sqrt(results['var_interaction']):10.6f}
+   ────────────────────────────────────────────────────────────────────
+   Total Gage R&R        {results['var_grr']:10.6f}   {results['sd_grr']:10.6f}      {results['pct_grr_var']:6.2f}%
+   Pièce                 {results['var_part']:10.6f}   {results['sd_part']:10.6f}      {results['pct_part_var']:6.2f}%
+   ────────────────────────────────────────────────────────────────────
+   Variation totale      {results['var_total']:10.6f}   {results['sd_total']:10.6f}     100.00%
+
+4. VARIATION D'ÉTUDE (Study Variation = 5.15 × Sigma)
+   
+   Composante                    Valeur       %SV
+   ──────────────────────────────────────────────────
+   EV (Répétabilité)            {results['EV']:8.3f}     {results['pct_repeat']:6.2f}%
+   AV (Reproductibilité)        {results['AV']:8.3f}     {results['pct_op']:6.2f}%
+   R&R (Total Gage R&R)         {results['RR']:8.3f}     {results['pct_grr']:6.2f}%
+   Vp (Variation pièce)         {results['Vp']:8.3f}     {results['pct_part']:6.2f}%
+   VT (Variation totale)        {results['VT']:8.3f}    100.00%
+
+5. ÉVALUATION DU SYSTÈME DE MESURE
+   
+   • %R&R (Study Variation) : {results['pct_grr']:.2f}%
+   • %R&R (Sigma)           : {results['pct_grr_var']:.2f}%
+   
+6. INTERPRÉTATION
+   
+   {interpret_grr(results['pct_grr'])[0]}
    
    Recommandations :
-   {'✓ Système acceptable pour la production' if results['pct_grr_tolerance'] <= 10 else '⚠ Amélioration nécessaire' if results['pct_grr_tolerance'] <= 30 else '✗ Système non acceptable - action immédiate requise'}
+   {'✓ Système acceptable pour la production' if results['pct_grr'] <= 10 else '⚠ Amélioration nécessaire' if results['pct_grr'] <= 30 else '✗ Système non acceptable - action immédiate requise'}
 
-═══════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════
     """
     return report
 
@@ -284,9 +316,9 @@ with right:
     st.markdown(
         """
         <div class="card">
-            <span class="metric-badge">📊 Rapports inclus</span>
+            <span class="metric-badge">📊 Calcul exact</span>
             <p style="color:#9ca3af;font-size:0.85rem;">
-                Graphiques interactifs, tableaux ANOVA, et rapport détaillé téléchargeable.
+                Méthode ANOVA avec variation d'étude (5.15 × σ). Résultats conformes aux normes MSA.
             </p>
         </div>
         """,
@@ -305,10 +337,11 @@ with st.sidebar:
     
     st.markdown("---")
     st.caption("📂 **Format du fichier Excel :**")
-    st.caption("• Colonne 1 : N° pièce (1-10)")
-    st.caption("• Colonnes 2-4 : Opérateur 1 (mesures 1-3)")
-    st.caption("• Colonnes 5-7 : Opérateur 2 (mesures 1-3)")
-    st.caption("• Colonnes 8-10 : Opérateur 3 (mesures 1-3)")
+    st.caption("• Colonne A : N° pièce (1-10)")
+    st.caption("• Colonnes B-D : Opérateur 1 (essais 1-3)")
+    st.caption("• Colonnes E-G : Opérateur 2 (essais 1-3)")
+    st.caption("• Colonnes H-J : Opérateur 3 (essais 1-3)")
+    st.caption("• Cellule B2 = Essai 1, Op 1, Pièce 1")
 
 uploaded_file = st.file_uploader("📂 Importer le fichier Excel Gage R&R", type=["xlsx"])
 
@@ -326,7 +359,7 @@ if uploaded_file is not None:
         st.stop()
 
     results = gage_rr_anova(df_long, alpha=1 - alpha)
-    pct_grr = results["pct_grr_tolerance"]  # Utiliser le % par rapport à la tolérance
+    pct_grr = results["pct_grr"]
     interp_text, interp_level = interpret_grr(pct_grr)
 
     pill_class = {
@@ -335,26 +368,38 @@ if uploaded_file is not None:
         "bad": "pill-bad"
     }[interp_level]
 
-    st.markdown("### 📊 Résultats Gage R&R")
+    st.markdown("### 📊 Résultats Gage R&R - Variation d'étude (5.15 × σ)")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
-        st.metric("%R&R (Tolérance)", f"{pct_grr:0.2f} %")
+        st.metric("R&R", f"{results['RR']:.3f}")
     with c2:
-        st.metric("%R&R (Total)", f"{results['pct_grr']:0.2f} %")
+        st.metric("EV (Répétabilité)", f"{results['EV']:.3f}")
     with c3:
-        st.metric("%Pièce", f"{results['pct_part']:0.2f} %")
+        st.metric("AV (Reproductibilité)", f"{results['AV']:.3f}")
     with c4:
-        st.metric("%Répétabilité", f"{results['pct_repeat']:0.2f} %")
+        st.metric("Vp (Variation pièce)", f"{results['Vp']:.3f}")
     with c5:
-        st.metric("%Reproductibilité", f"{results['pct_op']:0.2f} %")
+        st.metric("VT (Variation totale)", f"{results['VT']:.3f}")
+
+    st.markdown("### 📈 Pourcentages (%SV)")
+    
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("%R&R", f"{pct_grr:.2f} %")
+    with c2:
+        st.metric("%EV", f"{results['pct_repeat']:.2f} %")
+    with c3:
+        st.metric("%AV", f"{results['pct_op']:.2f} %")
+    with c4:
+        st.metric("%Vp", f"{results['pct_part']:.2f} %")
 
     st.markdown(
         f"""
         <div class="card">
             <span class="pill {pill_class}">{interp_text}</span>
             <p style="color:#9ca3af;font-size:0.9rem;margin-top:0.6rem;">
-                %R&amp;R = {pct_grr:0.2f} % (par rapport à la tolérance). 
+                %R&amp;R = {pct_grr:.2f} % (variation d'étude). 
                 Un système &gt; 30 % est généralement considéré comme non acceptable.
             </p>
         </div>
@@ -376,7 +421,6 @@ if uploaded_file is not None:
     ])
     
     with tab1:
-        # Diagramme en camembert des contributions
         col1, col2 = st.columns(2)
         
         with col1:
@@ -401,20 +445,19 @@ if uploaded_file is not None:
             st.plotly_chart(fig1, use_container_width=True)
         
         with col2:
-            # Décomposition du Gage R&R
             grr_detail_df = pd.DataFrame({
-                "Composante": ["Répétabilité", "Reproductibilité"],
-                "Pourcentage": [results["pct_repeat"], results["pct_op"]]
+                "Composante": ["Répétabilité (EV)", "Reproductibilité (AV)"],
+                "Valeur": [results["EV"], results["AV"]]
             })
             fig2 = px.bar(
                 grr_detail_df,
                 x="Composante",
-                y="Pourcentage",
+                y="Valeur",
                 title="Décomposition du Gage R&R",
                 color="Composante",
                 color_discrete_map={
-                    "Répétabilité": "#a855f7",
-                    "Reproductibilité": "#fbbf24"
+                    "Répétabilité (EV)": "#a855f7",
+                    "Reproductibilité (AV)": "#fbbf24"
                 }
             )
             fig2.update_layout(
@@ -426,7 +469,6 @@ if uploaded_file is not None:
             st.plotly_chart(fig2, use_container_width=True)
     
     with tab2:
-        # Graphique par opérateur
         op_stats = df_long.groupby("Operator")["Value"].agg(['mean', 'std']).reset_index()
         
         col1, col2 = st.columns(2)
@@ -469,7 +511,6 @@ if uploaded_file is not None:
             st.plotly_chart(fig4, use_container_width=True)
     
     with tab3:
-        # Graphique par pièce
         part_stats = df_long.groupby("Part")["Value"].agg(['mean', 'std']).reset_index()
         
         col1, col2 = st.columns(2)
@@ -526,7 +567,6 @@ if uploaded_file is not None:
             st.plotly_chart(fig6, use_container_width=True)
     
     with tab4:
-        # Cartes de contrôle
         mean_by_part_op = df_long.groupby(['Part', 'Operator'])['Value'].mean().reset_index()
         
         fig7 = px.line(
@@ -553,7 +593,6 @@ if uploaded_file is not None:
         )
         st.plotly_chart(fig7, use_container_width=True)
         
-        # Graphique des étendues
         range_by_part_op = df_long.groupby(['Part', 'Operator'])['Value'].apply(lambda x: x.max() - x.min()).reset_index()
         range_by_part_op.columns = ['Part', 'Operator', 'Range']
         
@@ -576,7 +615,6 @@ if uploaded_file is not None:
         st.plotly_chart(fig8, use_container_width=True)
     
     with tab5:
-        # Graphique d'interaction Pièce × Opérateur
         interaction_data = df_long.groupby(['Part', 'Operator'])['Value'].mean().reset_index()
         
         fig9 = px.line(
@@ -604,40 +642,34 @@ if uploaded_file is not None:
     st.markdown("---")
     st.markdown("### 📋 Tableaux détaillés")
     
-    tab_t1, tab_t2, tab_t3 = st.tabs(["ANOVA", "Composantes de variance", "Données brutes"])
+    tab_t1, tab_t2, tab_t3, tab_t4 = st.tabs(["ANOVA", "Variance (Sigma)", "Variation d'étude (5.15σ)", "Données brutes"])
     
     with tab_t1:
         anova_table = pd.DataFrame({
             "Source": ["Pièce", "Opérateur", "Pièce × Opérateur", "Répétabilité", "Total"],
             "SS": [
-                results["ss"]["Part"],
-                results["ss"]["Operator"],
-                results["ss"]["Part*Operator"],
-                results["ss"]["Repeatability"],
-                results["ss"]["Total"]
+                f"{results['ss']['Part']:.6f}",
+                f"{results['ss']['Operator']:.6f}",
+                f"{results['ss']['Part*Operator']:.6f}",
+                f"{results['ss']['Repeatability']:.6f}",
+                f"{results['ss']['Total']:.6f}"
             ],
             "DF": [
-                results["df"]["Part"],
-                results["df"]["Operator"],
-                results["df"]["Part*Operator"],
-                results["df"]["Repeatability"],
+                str(results["df"]["Part"]),
+                str(results["df"]["Operator"]),
+                str(results["df"]["Part*Operator"]),
+                str(results["df"]["Repeatability"]),
                 "-"
             ],
             "MS": [
-                results["ms"]["Part"],
-                results["ms"]["Operator"],
-                results["ms"]["Part*Operator"],
-                results["ms"]["Repeatability"],
+                f"{results['ms']['Part']:.6f}",
+                f"{results['ms']['Operator']:.6f}",
+                f"{results['ms']['Part*Operator']:.6f}",
+                f"{results['ms']['Repeatability']:.6f}",
                 "-"
             ]
         })
-        st.dataframe(
-            anova_table.style.format({
-                "SS": "{:0.6f}",
-                "MS": "{:0.6f}"
-            }),
-            use_container_width=True
-        )
+        st.dataframe(anova_table, use_container_width=True)
     
     with tab_t2:
         var_table = pd.DataFrame({
@@ -650,40 +682,61 @@ if uploaded_file is not None:
                 "Variation totale"
             ],
             "Variance": [
-                results["var_repeat"],
-                results["var_op"],
-                results["var_interaction"],
-                results["var_grr"],
-                results["var_part"],
-                results["var_total"],
+                f"{results['var_repeat']:.6f}",
+                f"{results['var_op']:.6f}",
+                f"{results['var_interaction']:.6f}",
+                f"{results['var_grr']:.6f}",
+                f"{results['var_part']:.6f}",
+                f"{results['var_total']:.6f}",
             ],
-            "Écart-type": [
-                results["sd_repeat"],
-                results["sd_op"],
-                np.sqrt(results["var_interaction"]),
-                results["sd_grr"],
-                results["sd_part"],
-                results["sd_total"],
+            "Écart-type (σ)": [
+                f"{results['sd_repeat']:.6f}",
+                f"{results['sd_op']:.6f}",
+                f"{np.sqrt(results['var_interaction']):.6f}",
+                f"{results['sd_grr']:.6f}",
+                f"{results['sd_part']:.6f}",
+                f"{results['sd_total']:.6f}",
             ],
-            "% Total": [
-                results["pct_repeat"],
-                results["pct_op"],
+            "% Contribution": [
+                f"{results['pct_repeat_var']:.2f}%",
+                f"{results['pct_op_var']:.2f}%",
                 "-",
-                results["pct_grr"],
-                results["pct_part"],
-                100.0
+                f"{results['pct_grr_var']:.2f}%",
+                f"{results['pct_part_var']:.2f}%",
+                "100.00%"
             ]
         })
-        st.dataframe(
-            var_table.style.format({
-                "Variance": "{:0.6f}",
-                "Écart-type": "{:0.6f}",
-                "% Total": "{:0.2f}%"
-            }),
-            use_container_width=True
-        )
+        st.dataframe(var_table, use_container_width=True)
     
     with tab_t3:
+        sv_table = pd.DataFrame({
+            "Composante": [
+                "EV - Répétabilité",
+                "AV - Reproductibilité",
+                "R&R - Total Gage R&R",
+                "Vp - Variation pièce",
+                "VT - Variation totale"
+            ],
+            "Valeur (5.15 × σ)": [
+                f"{results['EV']:.3f}",
+                f"{results['AV']:.3f}",
+                f"{results['RR']:.3f}",
+                f"{results['Vp']:.3f}",
+                f"{results['VT']:.3f}"
+            ],
+            "%SV": [
+                f"{results['pct_repeat']:.2f}%",
+                f"{results['pct_op']:.2f}%",
+                f"{results['pct_grr']:.2f}%",
+                f"{results['pct_part']:.2f}%",
+                "100.00%"
+            ]
+        })
+        st.dataframe(sv_table, use_container_width=True)
+        
+        st.info("📌 **Variation d'étude (Study Variation)** = 5.15 × écart-type (σ). Représente 99% de la variation du processus.")
+    
+    with tab_t4:
         st.dataframe(df_long, use_container_width=True)
 
     # ========== RAPPORT TÉLÉCHARGEABLE ==========
@@ -692,9 +745,8 @@ if uploaded_file is not None:
     st.markdown("### 📄 Rapport détaillé")
     
     report_text = generate_report(results)
-    st.text_area("Rapport Gage R&R", report_text, height=400)
+    st.text_area("Rapport Gage R&R", report_text, height=500)
     
-    # Bouton de téléchargement
     st.download_button(
         label="⬇️ Télécharger le rapport (TXT)",
         data=report_text,
@@ -707,7 +759,8 @@ if uploaded_file is not None:
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df_long.to_excel(writer, sheet_name='Données', index=False)
         anova_table.to_excel(writer, sheet_name='ANOVA', index=False)
-        var_table.to_excel(writer, sheet_name='Composantes', index=False)
+        var_table.to_excel(writer, sheet_name='Variance', index=False)
+        sv_table.to_excel(writer, sheet_name='Variation étude', index=False)
     
     st.download_button(
         label="⬇️ Télécharger les tableaux (Excel)",
@@ -717,26 +770,36 @@ if uploaded_file is not None:
     )
 
 else:
-    st.info("📂 Chargez votre fichier TEMPLATE-CAGE-RR.xlsx pour lancer l'analyse complète.")
+    st.info("📂 Chargez votre fichier Excel pour lancer l'analyse complète.")
     st.markdown("""
-    ### 📖 Guide d'utilisation
+    ### 📖 Structure attendue du fichier
     
-    1. **Préparez votre fichier Excel** avec la structure suivante :
-       - Colonne 1 : Numéro de pièce (1 à 10)
-       - Colonnes 2-4 : 3 mesures de l'opérateur 1
-       - Colonnes 5-7 : 3 mesures de l'opérateur 2
-       - Colonnes 8-10 : 3 mesures de l'opérateur 3
+    | Colonne | Contenu |
+    |---------|---------|
+    | A | Numéro de pièce (1 à 10) |
+    | B | Opérateur 1 - Essai 1 |
+    | C | Opérateur 1 - Essai 2 |
+    | D | Opérateur 1 - Essai 3 |
+    | E | Opérateur 2 - Essai 1 |
+    | F | Opérateur 2 - Essai 2 |
+    | G | Opérateur 2 - Essai 3 |
+    | H | Opérateur 3 - Essai 1 |
+    | I | Opérateur 3 - Essai 2 |
+    | J | Opérateur 3 - Essai 3 |
     
-    2. **Importez le fichier** via le bouton ci-dessus
+    **Exemple :** Cellule B2 = Mesure de l'essai 1, opérateur 1, pièce 1
     
-    3. **Consultez les résultats** :
-       - Métriques principales (%R&R, %Pièce, etc.)
-       - 5 types de graphiques interactifs
-       - Tableaux ANOVA détaillés
-       - Rapport téléchargeable
+    ### 🎯 Résultats attendus avec votre template
     
-    4. **Interprétation** :
-       - **%R&R ≤ 10%** : Système acceptable ✅
-       - **10% < %R&R ≤ 30%** : Système marginal ⚠️
-       - **%R&R > 30%** : Système non acceptable ❌
+    - **R&R** = 0.193
+    - **EV (Répétabilité)** = 0.175
+    - **AV (Reproductibilité)** = 0.080
+    - **Vp** = 0.530
+    - **VT** = 0.561
+    
+    ### 📊 Interprétation
+    
+    - **%R&R ≤ 10%** : Système acceptable ✅
+    - **10% < %R&R ≤ 30%** : Système marginal ⚠️
+    - **%R&R > 30%** : Système non acceptable ❌
     """)
