@@ -85,20 +85,25 @@ def build_long_from_template(df, n_operators, n_parts, n_reps):
         for op_idx in range(n_operators):
             for rep_idx in range(n_reps):
                 col_index = 1 + op_idx * n_reps + rep_idx
-                value = float(row.iloc[col_index])
-                long_rows.append({
-                    "Part": part,
-                    "Operator": op_idx + 1,
-                    "Rep": rep_idx + 1,
-                    "Value": value
-                })
+                # Vérifier si l'index de colonne existe
+                if col_index < len(row):
+                    value = float(row.iloc[col_index])
+                    long_rows.append({
+                        "Part": part,
+                        "Operator": op_idx + 1,
+                        "Rep": rep_idx + 1,
+                        "Value": value
+                    })
+                else:
+                    st.error(f"Colonne manquante dans le fichier. Vérifiez le nombre d'opérateurs et de répétitions.")
+                    return None
     return pd.DataFrame(long_rows)
 
 
-def gage_rr_anova(df_long, alpha=0.05):
+def gage_rr_anova(df_long, alpha=0.05, confidence_coefficient=5.15):
     """
     Calcul Gage R&R par méthode ANOVA.
-    Utilise le facteur 5.15 pour la variation d'étude (Study Variation).
+    Utilise le facteur de coefficient de confiance pour la variation d'étude.
     """
     grand_mean = df_long["Value"].mean()
     
@@ -128,32 +133,32 @@ def gage_rr_anova(df_long, alpha=0.05):
     df_e = p * o * (r - 1)
     
     # Carrés moyens
-    ms_p = ss_p / df_p if df_p > 0 else np.nan
-    ms_o = ss_o / df_o if df_o > 0 else np.nan
-    ms_po = ss_po / df_po if df_po > 0 else np.nan
-    ms_e = ss_e / df_e if df_e > 0 else np.nan
+    ms_p = ss_p / df_p if df_p > 0 else 0
+    ms_o = ss_o / df_o if df_o > 0 else 0
+    ms_po = ss_po / df_po if df_po > 0 else 0
+    ms_e = ss_e / df_e if df_e > 0 else 0
     
-    # Composantes de variance
-    var_repeat = ms_e
-    var_op = max((ms_o - ms_po) / (p * r), 0)
-    var_part = max((ms_p - ms_po) / (o * r), 0)
-    var_interaction = max((ms_po - ms_e) / r, 0)
+    # Composantes de variance (éviter les valeurs négatives)
+    var_repeat = max(ms_e, 0)
+    var_op = max((ms_o - ms_po) / (p * r), 0) if ms_o > ms_po else 0
+    var_part = max((ms_p - ms_po) / (o * r), 0) if ms_p > ms_po else 0
+    var_interaction = max((ms_po - ms_e) / r, 0) if ms_po > ms_e else 0
     
     var_grr = var_repeat + var_op + var_interaction
     var_total = var_grr + var_part
     
     # Écart-types (sigma)
-    sd_repeat = np.sqrt(var_repeat)
-    sd_op = np.sqrt(var_op)
-    sd_interaction = np.sqrt(var_interaction)
-    sd_grr = np.sqrt(var_grr)
-    sd_part = np.sqrt(var_part)
-    sd_total = np.sqrt(var_total)
+    sd_repeat = np.sqrt(var_repeat) if var_repeat > 0 else 0
+    sd_op = np.sqrt(var_op) if var_op > 0 else 0
+    sd_interaction = np.sqrt(var_interaction) if var_interaction > 0 else 0
+    sd_grr = np.sqrt(var_grr) if var_grr > 0 else 0
+    sd_part = np.sqrt(var_part) if var_part > 0 else 0
+    sd_total = np.sqrt(var_total) if var_total > 0 else 0
     
-    # FACTEUR 5.15 pour la variation d'étude
-    FACTOR = 5.15
+    # FACTEUR de coefficient de confiance pour la variation d'étude
+    FACTOR = confidence_coefficient
     
-    # Variation d'étude (Study Variation = 5.15 × sigma)
+    # Variation d'étude (Study Variation = coefficient × sigma)
     EV = sd_repeat * FACTOR  # Répétabilité
     AV = sd_op * FACTOR  # Reproductibilité
     RR = sd_grr * FACTOR  # Total Gage R&R
@@ -161,16 +166,16 @@ def gage_rr_anova(df_long, alpha=0.05):
     VT = sd_total * FACTOR  # Variation totale
     
     # Pourcentages par rapport à VT
-    pct_grr = 100 * RR / VT if VT > 0 else np.nan
-    pct_repeat = 100 * EV / VT if VT > 0 else np.nan
-    pct_op = 100 * AV / VT if VT > 0 else np.nan
-    pct_part = 100 * Vp / VT if VT > 0 else np.nan
+    pct_grr = 100 * RR / VT if VT > 0 else 0
+    pct_repeat = 100 * EV / VT if VT > 0 else 0
+    pct_op = 100 * AV / VT if VT > 0 else 0
+    pct_part = 100 * Vp / VT if VT > 0 else 0
     
     # Pourcentages par rapport aux variances (pour compatibilité)
-    pct_grr_var = 100 * sd_grr / sd_total if sd_total > 0 else np.nan
-    pct_repeat_var = 100 * sd_repeat / sd_total if sd_total > 0 else np.nan
-    pct_op_var = 100 * sd_op / sd_total if sd_total > 0 else np.nan
-    pct_part_var = 100 * sd_part / sd_total if sd_total > 0 else np.nan
+    pct_grr_var = 100 * sd_grr / sd_total if sd_total > 0 else 0
+    pct_repeat_var = 100 * sd_repeat / sd_total if sd_total > 0 else 0
+    pct_op_var = 100 * sd_op / sd_total if sd_total > 0 else 0
+    pct_part_var = 100 * sd_part / sd_total if sd_total > 0 else 0
     
     return {
         "grand_mean": grand_mean,
@@ -185,7 +190,7 @@ def gage_rr_anova(df_long, alpha=0.05):
         "sd_grr": sd_grr,
         "sd_part": sd_part,
         "sd_total": sd_total,
-        # Valeurs avec facteur 5.15
+        # Valeurs avec coefficient de confiance
         "EV": EV,
         "AV": AV,
         "RR": RR,
@@ -219,7 +224,8 @@ def gage_rr_anova(df_long, alpha=0.05):
             "Operator": ms_o,
             "Part*Operator": ms_po,
             "Repeatability": ms_e
-        }
+        },
+        "confidence_coefficient": FACTOR
     }
 
 
@@ -234,6 +240,7 @@ def interpret_grr(pct_grr):
 
 def generate_report(results):
     """Génère un rapport détaillé en format texte."""
+    confidence_coefficient = results.get('confidence_coefficient', 5.15)
     report = f"""
 ═══════════════════════════════════════════════════════════════════
                  RAPPORT GAGE R&R - ANALYSE MSA
@@ -265,7 +272,7 @@ def generate_report(results):
    ────────────────────────────────────────────────────────────────────
    Variation totale      {results['var_total']:10.6f}   {results['sd_total']:10.6f}     100.00%
 
-4. VARIATION D'ÉTUDE (Study Variation = 5.15 × Sigma)
+4. VARIATION D'ÉTUDE (Study Variation = {confidence_coefficient} × Sigma)
    
    Composante                    Valeur       %SV
    ──────────────────────────────────────────────────
@@ -318,7 +325,7 @@ with right:
         <div class="card">
             <span class="metric-badge">📊 Calcul exact</span>
             <p style="color:#9ca3af;font-size:0.85rem;">
-                Méthode ANOVA avec variation d'étude (5.15 × σ). Résultats conformes aux normes MSA.
+                Méthode ANOVA avec variation d'étude (5.15 × σ par défaut). Résultats conformes aux normes MSA.
             </p>
         </div>
         """,
@@ -334,6 +341,17 @@ with st.sidebar:
     n_parts = st.number_input("Nombre de pièces", min_value=2, max_value=50, value=10, step=1)
     n_reps = st.number_input("Nombre de mesures (répétitions)", min_value=2, max_value=10, value=3, step=1)
     alpha = st.slider("Niveau de confiance (1 - α)", min_value=0.80, max_value=0.99, value=0.95, step=0.01)
+    
+    st.markdown("---")
+    st.header("📐 Coefficient de confiance")
+    confidence_coefficient = st.number_input(
+        "Coefficient pour la variation d'étude",
+        min_value=1.0,
+        max_value=10.0,
+        value=5.15,
+        step=0.01,
+        help="Facteur multiplicateur pour convertir sigma en variation d'étude. Par défaut: 5.15 (99% de la population)"
+    )
     
     st.markdown("---")
     st.caption("📂 **Format du fichier Excel :**")
@@ -354,11 +372,13 @@ if uploaded_file is not None:
 
     try:
         df_long = build_long_from_template(raw_df, n_operators, n_parts, n_reps)
+        if df_long is None:
+            st.stop()
     except Exception as e:
         st.error(f"Erreur lors de la conversion du template : {e}")
         st.stop()
 
-    results = gage_rr_anova(df_long, alpha=1 - alpha)
+    results = gage_rr_anova(df_long, alpha=1 - alpha, confidence_coefficient=confidence_coefficient)
     pct_grr = results["pct_grr"]
     interp_text, interp_level = interpret_grr(pct_grr)
 
@@ -368,7 +388,7 @@ if uploaded_file is not None:
         "bad": "pill-bad"
     }[interp_level]
 
-    st.markdown("### 📊 Résultats Gage R&R - Variation d'étude (5.15 × σ)")
+    st.markdown(f"### 📊 Résultats Gage R&R - Variation d'étude ({confidence_coefficient} × σ)")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
@@ -401,6 +421,7 @@ if uploaded_file is not None:
             <p style="color:#9ca3af;font-size:0.9rem;margin-top:0.6rem;">
                 %R&amp;R = {pct_grr:.2f} % (variation d'étude). 
                 Un système &gt; 30 % est généralement considéré comme non acceptable.
+                Coefficient de confiance utilisé : {confidence_coefficient}
             </p>
         </div>
         """,
@@ -642,7 +663,7 @@ if uploaded_file is not None:
     st.markdown("---")
     st.markdown("### 📋 Tableaux détaillés")
     
-    tab_t1, tab_t2, tab_t3, tab_t4 = st.tabs(["ANOVA", "Variance (Sigma)", "Variation d'étude (5.15σ)", "Données brutes"])
+    tab_t1, tab_t2, tab_t3, tab_t4 = st.tabs(["ANOVA", "Variance (Sigma)", f"Variation d'étude ({confidence_coefficient}σ)", "Données brutes"])
     
     with tab_t1:
         anova_table = pd.DataFrame({
@@ -717,7 +738,7 @@ if uploaded_file is not None:
                 "Vp - Variation pièce",
                 "VT - Variation totale"
             ],
-            "Valeur (5.15 × σ)": [
+            f"Valeur ({confidence_coefficient} × σ)": [
                 f"{results['EV']:.3f}",
                 f"{results['AV']:.3f}",
                 f"{results['RR']:.3f}",
@@ -734,7 +755,7 @@ if uploaded_file is not None:
         })
         st.dataframe(sv_table, use_container_width=True)
         
-        st.info("📌 **Variation d'étude (Study Variation)** = 5.15 × écart-type (σ). Représente 99% de la variation du processus.")
+        st.info(f"📌 **Variation d'étude (Study Variation)** = {confidence_coefficient} × écart-type (σ). Représente environ 99% de la variation du processus (pour 5.15).")
     
     with tab_t4:
         st.dataframe(df_long, use_container_width=True)
@@ -802,4 +823,10 @@ else:
     - **%R&R ≤ 10%** : Système acceptable ✅
     - **10% < %R&R ≤ 30%** : Système marginal ⚠️
     - **%R&R > 30%** : Système non acceptable ❌
+    
+    ### ⚙️ Coefficient de confiance
+    Par défaut : **5.15** (correspond à 99% de la population normale)
+    - 4.00 : 95.45% de la population
+    - 5.15 : 99.00% de la population (recommandé pour MSA)
+    - 6.00 : 99.73% de la population
     """)
