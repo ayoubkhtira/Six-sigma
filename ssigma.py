@@ -1,23 +1,38 @@
 import streamlit as st
 import sys
 import subprocess
+import importlib.util
 
-# Vérifier si le module streamlit-authenticator est installé
-try:
-    import streamlit_authenticator as stauth
-except ImportError:
-    st.error("🔧 Module streamlit-authenticator non trouvé. Installation en cours...")
-    with st.spinner("Installation en cours..."):
+# Fonction pour vérifier et installer les packages
+def check_and_install_package(package_name, import_name=None):
+    if import_name is None:
+        import_name = package_name
+    
+    # Vérifier si le package est déjà installé
+    spec = importlib.util.find_spec(import_name)
+    if spec is None:
+        st.warning(f"📦 Package '{package_name}' non trouvé. Installation en cours...")
+        progress_bar = st.progress(0)
+        
         try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-authenticator"])
-            import streamlit_authenticator as stauth
-            st.success("✅ Module installé avec succès!")
+            # Essayer d'installer le package
+            progress_bar.progress(50)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+            progress_bar.progress(100)
+            st.success(f"✅ Package '{package_name}' installé avec succès!")
             st.rerun()
         except Exception as e:
-            st.error(f"❌ Erreur lors de l'installation : {e}")
-            st.info("💡 Veuillez installer manuellement : pip install streamlit-authenticator")
-            st.stop()
+            st.error(f"❌ Erreur lors de l'installation de {package_name}: {e}")
+            st.info("💡 Installation manuelle: pip install " + package_name)
+            return False
+    return True
 
+# Vérifier et installer streamlit-authenticator
+if not check_and_install_package("streamlit-authenticator", "streamlit_authenticator"):
+    st.stop()
+
+# Maintenant on peut importer
+import streamlit_authenticator as stauth
 import pandas as pd
 import os
 from datetime import datetime
@@ -46,7 +61,6 @@ def lire_csv():
     if os.path.exists(FICHIER_CSV):
         return pd.read_csv(FICHIER_CSV)
     else:
-        # Créer un DataFrame vide avec les bonnes colonnes
         return pd.DataFrame(columns=['id', 'date_heure', 'nom', 'fonction', 'type', 'description', 'chemins_images'])
 
 def ecrire_csv(df):
@@ -57,13 +71,11 @@ def ajouter_intervention(nom, fonction, type_interv, description, chemins_images
     """Ajoute une nouvelle intervention dans le CSV"""
     df = lire_csv()
     
-    # Générer un nouvel ID
     if df.empty:
         new_id = 1
     else:
         new_id = df['id'].max() + 1
     
-    # Créer la nouvelle ligne
     nouvelle_ligne = pd.DataFrame({
         'id': [new_id],
         'date_heure': [datetime.now().strftime("%d/%m/%Y %H:%M")],
@@ -74,7 +86,6 @@ def ajouter_intervention(nom, fonction, type_interv, description, chemins_images
         'chemins_images': [",".join(chemins_images)]
     })
     
-    # Concaténer et sauvegarder
     df = pd.concat([df, nouvelle_ligne], ignore_index=True)
     ecrire_csv(df)
     return new_id
@@ -85,7 +96,6 @@ def supprimer_intervention(id_interv, chemins_images):
     df = df[df['id'] != id_interv]
     ecrire_csv(df)
     
-    # Supprimer les images associées
     if chemins_images and isinstance(chemins_images, str):
         for chemin in chemins_images.split(','):
             if os.path.exists(chemin):
@@ -120,22 +130,14 @@ elif authentication_status == None:
     st.warning('Veuillez entrer votre identifiant et votre mot de passe')
 
 elif authentication_status:
-    # --- CODE DE L'APPLICATION ---
-    
     with st.sidebar:
         st.write(f"Bienvenue **{name}**")
         authenticator.logout('Déconnexion', 'sidebar')
 
-    # -----------------------------------------
-    # INTERFACE PRINCIPALE
-    # -----------------------------------------
     st.title("📦 Gestion des Interventions & Inventaires")
 
     onglet_saisie, onglet_historique = st.tabs(["📝 Saisie", "📊 Historique & Export"])
 
-    # ==========================================
-    # ONGLET 1 : SAISIE
-    # ==========================================
     with onglet_saisie:
         with st.form("form_interv", clear_on_submit=True):
             st.subheader("Informations Générales")
@@ -169,15 +171,11 @@ elif authentication_status:
                         buffer.write(f.getbuffer())
                     chemins.append(path)
                 
-                # Utilisation de la fonction CSV au lieu de SQL
                 ajouter_intervention(nom, fonction, type_interv, description, chemins)
                 st.success(f"✅ Opération de type '{type_interv}' enregistrée avec succès.")
             else:
                 st.warning("⚠️ Veuillez remplir au moins le nom et la description.")
 
-    # ==========================================
-    # ONGLET 2 : HISTORIQUE & EXPORT
-    # ==========================================
     with onglet_historique:
         df = lire_csv()
 
@@ -209,7 +207,6 @@ elif authentication_status:
                     use_container_width=True
                 )
 
-            # Filtrage dynamique
             df_display = df.copy()
             if search:
                 mask = df_display.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
