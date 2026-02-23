@@ -10,7 +10,7 @@ import io
 # -----------------------------------------
 # CONFIGURATION ET INITIALISATION
 # -----------------------------------------
-st.set_page_config(page_title="GMAO Lite - Interventions", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="GMAO & Inventaire", page_icon="📦", layout="wide")
 
 DOSSIER_IMAGES = "images_sauvegardees"
 if not os.path.exists(DOSSIER_IMAGES):
@@ -44,7 +44,6 @@ def supprimer_intervention(id_interv, chemins_images):
     c.execute("DELETE FROM interventions WHERE id=?", (id_interv,))
     conn.commit()
     conn.close()
-    # Supprimer les fichiers physiques
     if chemins_images:
         for chemin in chemins_images.split(','):
             if os.path.exists(chemin):
@@ -54,7 +53,7 @@ def supprimer_intervention(id_interv, chemins_images):
 # -----------------------------------------
 # INTERFACE PRINCIPALE
 # -----------------------------------------
-st.title("⚙️ Système de Gestion des Interventions")
+st.title("📦 Gestion des Interventions & Inventaires")
 
 onglet_saisie, onglet_historique = st.tabs(["📝 Saisie", "📊 Historique & Export"])
 
@@ -65,20 +64,28 @@ with onglet_saisie:
     with st.form("form_interv", clear_on_submit=True):
         st.subheader("Informations Générales")
         c1, c2, c3 = st.columns(3)
-        nom = c1.text_input("Nom de l'intervenant")
+        nom = c1.text_input("Nom de l'intervenant / Responsable")
         fonction = c2.text_input("Fonction")
-        type_interv = c3.selectbox("Nature", ["Maintenance Préventive", "Maintenance Curative", "Installation", "Audit", "Autre"])
         
-        description = st.text_area("Rapport d'intervention (Travaux effectués, pièces changées...)")
+        # AJOUT DE L'OPTION "INVENTAIRE" ICI
+        type_interv = c3.selectbox("Nature de l'opération", [
+            "Maintenance Préventive", 
+            "Maintenance Curative", 
+            "Installation", 
+            "Audit", 
+            "Inventaire", 
+            "Autre"
+        ])
         
-        st.subheader("Photos")
+        description = st.text_area("Rapport détaillé (Travaux, Liste de matériel, observations...)")
+        
+        st.subheader("Photos / Justificatifs")
         fichiers = st.file_uploader("Preuves photos", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
         
-        submit = st.form_submit_button("💾 Enregistrer l'intervention", use_container_width=True)
+        submit = st.form_submit_button("💾 Enregistrer dans la base", use_container_width=True)
 
     if submit:
         if nom and description:
-            # Sauvegarde Images
             chemins = []
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             for i, f in enumerate(fichiers):
@@ -87,14 +94,13 @@ with onglet_saisie:
                     buffer.write(f.getbuffer())
                 chemins.append(path)
             
-            # Sauvegarde DB
             conn = sqlite3.connect('interventions.db')
             c = conn.cursor()
             c.execute("INSERT INTO interventions (date_heure, nom, fonction, type, description, chemins_images) VALUES (?,?,?,?,?,?)",
                       (datetime.now().strftime("%d/%m/%Y %H:%M"), nom, fonction, type_interv, description, ",".join(chemins)))
             conn.commit()
             conn.close()
-            st.success("✅ Données enregistrées et sécurisées.")
+            st.success(f"✅ Opération de type '{type_interv}' enregistrée avec succès.")
         else:
             st.warning("⚠️ Veuillez remplir au moins le nom et la description.")
 
@@ -107,51 +113,52 @@ with onglet_historique:
     conn.close()
 
     if not df.empty:
-        # --- Statistiques ---
-        st.subheader("Vue d'ensemble")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Total Interventions", len(df))
-        m2.metric("Dernière intervention", df['date_heure'].iloc[0])
-        m3.metric("Intervenants uniques", len(df['nom'].unique()))
+        st.subheader("Indicateurs clés")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Total Opérations", len(df))
+        m2.metric("Dernière saisie", df['date_heure'].iloc[0])
+        m3.metric("Intervenants", len(df['nom'].unique()))
+        # Statistique spécifique pour l'inventaire
+        nb_inventaires = len(df[df['type'] == "Inventaire"])
+        m4.metric("Nb Inventaires", nb_inventaires)
 
         st.divider()
 
-        # --- Filtres et Export ---
         col_f1, col_f2, col_export = st.columns([2, 2, 1])
         with col_f1:
-            search = st.text_input("🔍 Rechercher (Nom ou Description)")
+            search = st.text_input("🔍 Rechercher (Nom, Type ou Description)")
         with col_export:
-            # Conversion Excel en mémoire
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                df.to_excel(writer, index=False, sheet_name='Interventions')
+                df.to_excel(writer, index=False, sheet_name='Interventions_Inventaires')
             processed_data = output.getvalue()
             
             st.download_button(
-                label="📥 Télécharger l'historique (Excel)",
+                label="📥 Export complet vers Excel",
                 data=processed_data,
-                file_name=f"Rapport_Interventions_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                file_name=f"Rapport_Global_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
 
-        # Filtrage
+        # Filtrage dynamique
         df_display = df.copy()
         if search:
-            df_display = df_display[df_display['nom'].str.contains(search, case=False) | df_display['description'].str.contains(search, case=False)]
+            mask = df_display.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
+            df_display = df_display[mask]
 
         st.dataframe(df_display.drop(columns=['chemins_images']), use_container_width=True, hide_index=True)
 
-        # --- Détails et Gestion ---
         st.divider()
-        st.subheader("🔍 Détails de l'enregistrement")
-        selected_id = st.selectbox("Sélectionner un ID pour voir les photos ou supprimer", options=df_display['id'].tolist())
+        st.subheader("🔍 Détails et Médias")
+        selected_id = st.selectbox("Sélectionner un ID pour consulter", options=df_display['id'].tolist())
         
         if selected_id:
             row = df_display[df_display['id'] == selected_id].iloc[0]
             
             c_det1, c_det2 = st.columns([2, 1])
             with c_det1:
+                st.write(f"**Type :** {row['type']}")
                 st.write(f"**Description :** {row['description']}")
                 imgs = row['chemins_images']
                 if imgs:
@@ -161,13 +168,13 @@ with onglet_historique:
                         if os.path.exists(p):
                             cols[idx % 3].image(Image.open(p), use_container_width=True)
                 else:
-                    st.info("Aucune photo pour cette intervention.")
+                    st.info("Aucun média joint.")
             
             with c_det2:
-                st.warning("Zone de danger")
-                if st.button("🗑️ Supprimer cette intervention", use_container_width=True):
+                st.error("Administration")
+                if st.button("🗑️ Supprimer l'entrée", use_container_width=True):
                     if supprimer_intervention(selected_id, row['chemins_images']):
-                        st.success("Supprimé. Veuillez rafraîchir la page.")
+                        st.success("Entrée supprimée.")
                         st.rerun()
     else:
-        st.info("Aucune donnée enregistrée pour le moment.")
+        st.info("La base de données est vide.")
