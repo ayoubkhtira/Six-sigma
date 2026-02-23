@@ -6,6 +6,7 @@ import shutil
 from datetime import datetime
 from PIL import Image
 import io
+from fpdf import FPDF  # <-- AJOUT : Import de FPDF
 
 # -----------------------------------------
 # CONFIGURATION ET INITIALISATION
@@ -49,6 +50,75 @@ def supprimer_intervention(id_interv, chemins_images):
             if os.path.exists(chemin):
                 os.remove(chemin)
     return True
+
+# ==========================================
+# AJOUT : FONCTION DE GÉNÉRATION PDF
+# ==========================================
+def generer_pdf(donnees, chemins_images):
+    """
+    Génère un PDF à partir des données d'intervention et des chemins d'images
+    """
+    pdf = FPDF()
+    pdf.add_page()
+    
+    # --- En-tête ---
+    pdf.set_font("Arial", "B", 20)
+    pdf.cell(0, 10, "FICHE D'INTERVENTION", ln=True, align="C")
+    pdf.set_font("Arial", "", 10)
+    pdf.cell(0, 10, f"Généré le : {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="R")
+    pdf.ln(5)
+    
+    # --- Informations Client/Intervenant ---
+    pdf.set_fill_color(240, 240, 240)
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, " Détails de l'intervention", ln=True, fill=True)
+    pdf.set_font("Arial", "", 11)
+    
+    pdf.cell(50, 10, "ID Intervention :", border="B")
+    pdf.cell(0, 10, str(donnees['id']), border="B", ln=True)
+    
+    pdf.cell(50, 10, "Intervenant :", border="B")
+    pdf.cell(0, 10, f"{donnees['nom']} ({donnees['fonction']})", border="B", ln=True)
+    
+    pdf.cell(50, 10, "Date & Heure :", border="B")
+    pdf.cell(0, 10, str(donnees['date_heure']), border="B", ln=True)
+    
+    pdf.cell(50, 10, "Nature :", border="B")
+    pdf.cell(0, 10, str(donnees['type']), border="B", ln=True)
+    
+    pdf.ln(5)
+    
+    # --- Description ---
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, " Rapport de mission", ln=True, fill=True)
+    pdf.set_font("Arial", "", 11)
+    pdf.multi_cell(0, 10, str(donnees['description']), border=1)
+    
+    pdf.ln(10)
+    
+    # --- Photos ---
+    if chemins_images:
+        pdf.set_font("Arial", "B", 12)
+        pdf.cell(0, 10, " Photos jointes", ln=True, fill=True)
+        pdf.ln(5)
+        
+        y_start = pdf.get_y()
+        x_start = 10
+        img_width = 60
+        
+        for i, chemin in enumerate(chemins_images.split(',')):
+            chemin = chemin.strip()
+            if os.path.exists(chemin):
+                try:
+                    # Aligner 3 images par ligne
+                    col = i % 3
+                    row = i // 3
+                    pdf.image(chemin, x=x_start + (col * 65), y=y_start + (row * 65), w=img_width)
+                except Exception as e:
+                    print(f"Erreur lors de l'insertion de l'image {chemin}: {e}")
+    
+    # Retourner le PDF sous forme de bytes
+    return pdf.output(dest='S').encode('latin-1')
 
 # -----------------------------------------
 # INTERFACE PRINCIPALE
@@ -156,25 +226,48 @@ with onglet_historique:
         if selected_id:
             row = df_display[df_display['id'] == selected_id].iloc[0]
             
-            c_det1, c_det2 = st.columns([2, 1])
-            with c_det1:
-                st.write(f"**Type :** {row['type']}")
-                st.write(f"**Description :** {row['description']}")
-                imgs = row['chemins_images']
-                if imgs:
-                    list_imgs = imgs.split(',')
-                    cols = st.columns(3)
-                    for idx, p in enumerate(list_imgs):
-                        if os.path.exists(p):
-                            cols[idx % 3].image(Image.open(p), use_container_width=True)
-                else:
-                    st.info("Aucun média joint.")
+            # ==========================================
+            # AJOUT : Bouton de téléchargement PDF
+            # ==========================================
+            col_pdf, col_details = st.columns([1, 3])
             
-            with c_det2:
-                st.error("Administration")
-                if st.button("🗑️ Supprimer l'entrée", use_container_width=True):
-                    if supprimer_intervention(selected_id, row['chemins_images']):
-                        st.success("Entrée supprimée.")
-                        st.rerun()
+            with col_pdf:
+                st.write("")  # Espacement
+                st.write("")  # Espacement
+                # Génération du PDF
+                pdf_bytes = generer_pdf(row, row['chemins_images'])
+                
+                st.download_button(
+                    label="📄 Télécharger la fiche PDF",
+                    data=pdf_bytes,
+                    file_name=f"Fiche_Intervention_{selected_id}_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            
+            with col_details:
+                c_det1, c_det2 = st.columns([2, 1])
+                with c_det1:
+                    st.write(f"**Type :** {row['type']}")
+                    st.write(f"**Description :** {row['description']}")
+                    imgs = row['chemins_images']
+                    if imgs:
+                        list_imgs = imgs.split(',')
+                        cols = st.columns(3)
+                        for idx, p in enumerate(list_imgs):
+                            if os.path.exists(p):
+                                try:
+                                    cols[idx % 3].image(Image.open(p), use_container_width=True)
+                                except:
+                                    cols[idx % 3].warning("Image corrompue")
+                    else:
+                        st.info("Aucun média joint.")
+                
+                with c_det2:
+                    st.error("Administration")
+                    if st.button("🗑️ Supprimer l'entrée", use_container_width=True):
+                        if supprimer_intervention(selected_id, row['chemins_images']):
+                            st.success("Entrée supprimée.")
+                            st.rerun()
     else:
         st.info("La base de données est vide.")
