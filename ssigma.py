@@ -1,38 +1,4 @@
 import streamlit as st
-import sys
-import subprocess
-import importlib.util
-
-# Fonction pour vérifier et installer les packages
-def check_and_install_package(package_name, import_name=None):
-    if import_name is None:
-        import_name = package_name
-    
-    # Vérifier si le package est déjà installé
-    spec = importlib.util.find_spec(import_name)
-    if spec is None:
-        st.warning(f"📦 Package '{package_name}' non trouvé. Installation en cours...")
-        progress_bar = st.progress(0)
-        
-        try:
-            # Essayer d'installer le package
-            progress_bar.progress(50)
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-            progress_bar.progress(100)
-            st.success(f"✅ Package '{package_name}' installé avec succès!")
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Erreur lors de l'installation de {package_name}: {e}")
-            st.info("💡 Installation manuelle: pip install " + package_name)
-            return False
-    return True
-
-# Vérifier et installer streamlit-authenticator
-if not check_and_install_package("streamlit-authenticator", "streamlit_authenticator"):
-    st.stop()
-
-# Maintenant on peut importer
-import streamlit_authenticator as stauth
 import pandas as pd
 import os
 from datetime import datetime
@@ -102,42 +68,117 @@ def supprimer_intervention(id_interv, chemins_images):
                 os.remove(chemin)
     return True
 
-# --- CONFIGURATION DES UTILISATEURS ---
-names = ["Administrateur"]
-usernames = ["admin"]
-passwords = ["1234"]
+# -----------------------------------------
+# FONCTION D'AUTHENTIFICATION SIMPLE
+# -----------------------------------------
+def init_session_state():
+    """Initialise les variables de session"""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    if 'username' not in st.session_state:
+        st.session_state.username = ""
+    if 'login_attempts' not in st.session_state:
+        st.session_state.login_attempts = 0
 
-# Hachage des mots de passe
-hashed_passwords = stauth.Hasher(passwords).generate()
+def login_form():
+    """Affiche le formulaire de connexion"""
+    st.markdown("""
+    <style>
+    .login-container {
+        max-width: 400px;
+        margin: 0 auto;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    with st.container():
+        st.markdown("<div class='login-container'>", unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1,2,1])
+        with col2:
+            st.image("https://img.icons8.com/fluency/96/000flows.png", width=100)
+            st.title("🔐 Connexion")
+            
+            with st.form("login_form"):
+                username = st.text_input("👤 Identifiant", placeholder="Entrez votre identifiant")
+                password = st.text_input("🔑 Mot de passe", type="password", placeholder="Entrez votre mot de passe")
+                
+                col_btn1, col_btn2, col_btn3 = st.columns([1,2,1])
+                with col_btn2:
+                    submit = st.form_submit_button("Se connecter", use_container_width=True)
+                
+                if submit:
+                    # Identifiants valides (à modifier selon vos besoins)
+                    valid_users = {
+                        "admin": "1234",
+                        "user": "password",
+                        "technicien": "tech2024"
+                    }
+                    
+                    if username in valid_users and password == valid_users[username]:
+                        st.session_state.authenticated = True
+                        st.session_state.username = username
+                        st.session_state.login_attempts = 0
+                        st.success("✅ Connexion réussie!")
+                        st.rerun()
+                    else:
+                        st.session_state.login_attempts += 1
+                        remaining = 3 - st.session_state.login_attempts
+                        if remaining > 0:
+                            st.error(f"❌ Identifiant ou mot de passe incorrect. Il vous reste {remaining} tentative(s).")
+                        else:
+                            st.error("🚫 Trop de tentatives. Veuillez réessayer plus tard.")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
 
-# Création de l'objet d'authentification
-authenticator = stauth.Authenticate(
-    {'usernames': {
-        usernames[0]: {'name': names[0], 'password': hashed_passwords[0]}
-    }},
-    "cookie_intervention",
-    "abcdef",
-    cookie_expiry_days=30
-)
+def logout():
+    """Déconnecte l'utilisateur"""
+    st.session_state.authenticated = False
+    st.session_state.username = ""
+    st.rerun()
 
-# --- AFFICHAGE DE L'ÉCRAN DE CONNEXION ---
-name, authentication_status, username = authenticator.login('Connexion', 'main')
+# -----------------------------------------
+# MAIN - GESTION DE L'AUTHENTIFICATION
+# -----------------------------------------
+init_session_state()
 
-if authentication_status == False:
-    st.error('L\'identifiant ou le mot de passe est incorrect')
-
-elif authentication_status == None:
-    st.warning('Veuillez entrer votre identifiant et votre mot de passe')
-
-elif authentication_status:
+# Vérifier si l'utilisateur est authentifié
+if not st.session_state.authenticated:
+    # Afficher le formulaire de connexion
+    login_form()
+else:
+    # Utilisateur authentifié - Afficher l'application
     with st.sidebar:
-        st.write(f"Bienvenue **{name}**")
-        authenticator.logout('Déconnexion', 'sidebar')
+        st.success(f"✅ Connecté en tant que **{st.session_state.username}**")
+        st.divider()
+        st.markdown("### Navigation")
+        
+        # Ajouter des informations supplémentaires dans la sidebar
+        st.markdown("---")
+        st.markdown("### 📊 Statistiques rapides")
+        df_stats = lire_csv()
+        if not df_stats.empty:
+            st.metric("Total interventions", len(df_stats))
+            st.metric("Dernière activité", df_stats['date_heure'].iloc[0])
+        
+        st.markdown("---")
+        if st.button("🚪 Déconnexion", use_container_width=True):
+            logout()
 
+    # -----------------------------------------
+    # INTERFACE PRINCIPALE
+    # -----------------------------------------
     st.title("📦 Gestion des Interventions & Inventaires")
+    st.markdown(f"Bienvenue **{st.session_state.username}** dans l'espace de gestion.")
 
     onglet_saisie, onglet_historique = st.tabs(["📝 Saisie", "📊 Historique & Export"])
 
+    # ==========================================
+    # ONGLET 1 : SAISIE
+    # ==========================================
     with onglet_saisie:
         with st.form("form_interv", clear_on_submit=True):
             st.subheader("Informations Générales")
@@ -176,6 +217,9 @@ elif authentication_status:
             else:
                 st.warning("⚠️ Veuillez remplir au moins le nom et la description.")
 
+    # ==========================================
+    # ONGLET 2 : HISTORIQUE & EXPORT
+    # ==========================================
     with onglet_historique:
         df = lire_csv()
 
@@ -207,6 +251,7 @@ elif authentication_status:
                     use_container_width=True
                 )
 
+            # Filtrage dynamique
             df_display = df.copy()
             if search:
                 mask = df_display.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)
