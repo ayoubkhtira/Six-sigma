@@ -12,23 +12,20 @@ except ImportError:
             subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-authenticator"])
             import streamlit_authenticator as stauth
             st.success("✅ Module installé avec succès!")
-            st.rerun()  # Redémarrer l'application après installation
+            st.rerun()
         except Exception as e:
             st.error(f"❌ Erreur lors de l'installation : {e}")
             st.info("💡 Veuillez installer manuellement : pip install streamlit-authenticator")
             st.stop()
 
-import sqlite3
 import pandas as pd
 import os
 from datetime import datetime
 from PIL import Image
 import io
-import yaml
-from yaml.loader import SafeLoader
 
 # -----------------------------------------
-# CONFIGURATION DE LA PAGE (DOIT ÊTRE LA PREMIÈRE COMMANDE STREAMLIT)
+# CONFIGURATION DE LA PAGE
 # -----------------------------------------
 st.set_page_config(page_title="GMAO & Inventaire", page_icon="📦", layout="wide")
 
@@ -36,38 +33,60 @@ st.set_page_config(page_title="GMAO & Inventaire", page_icon="📦", layout="wid
 # CONFIGURATION ET INITIALISATION
 # -----------------------------------------
 DOSSIER_IMAGES = "images_sauvegardees"
+FICHIER_CSV = "interventions.csv"
+
 if not os.path.exists(DOSSIER_IMAGES):
     os.makedirs(DOSSIER_IMAGES)
 
-def init_db():
-    conn = sqlite3.connect('interventions.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS interventions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date_heure TEXT,
-            nom TEXT,
-            fonction TEXT,
-            type TEXT,
-            description TEXT,
-            chemins_images TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
 # -----------------------------------------
-# FONCTIONS UTILITAIRES
+# FONCTIONS DE GESTION CSV
 # -----------------------------------------
+def lire_csv():
+    """Lit le fichier CSV et retourne un DataFrame"""
+    if os.path.exists(FICHIER_CSV):
+        return pd.read_csv(FICHIER_CSV)
+    else:
+        # Créer un DataFrame vide avec les bonnes colonnes
+        return pd.DataFrame(columns=['id', 'date_heure', 'nom', 'fonction', 'type', 'description', 'chemins_images'])
+
+def ecrire_csv(df):
+    """Écrit le DataFrame dans le fichier CSV"""
+    df.to_csv(FICHIER_CSV, index=False)
+
+def ajouter_intervention(nom, fonction, type_interv, description, chemins_images):
+    """Ajoute une nouvelle intervention dans le CSV"""
+    df = lire_csv()
+    
+    # Générer un nouvel ID
+    if df.empty:
+        new_id = 1
+    else:
+        new_id = df['id'].max() + 1
+    
+    # Créer la nouvelle ligne
+    nouvelle_ligne = pd.DataFrame({
+        'id': [new_id],
+        'date_heure': [datetime.now().strftime("%d/%m/%Y %H:%M")],
+        'nom': [nom],
+        'fonction': [fonction],
+        'type': [type_interv],
+        'description': [description],
+        'chemins_images': [",".join(chemins_images)]
+    })
+    
+    # Concaténer et sauvegarder
+    df = pd.concat([df, nouvelle_ligne], ignore_index=True)
+    ecrire_csv(df)
+    return new_id
+
 def supprimer_intervention(id_interv, chemins_images):
-    conn = sqlite3.connect('interventions.db')
-    c = conn.cursor()
-    c.execute("DELETE FROM interventions WHERE id=?", (id_interv,))
-    conn.commit()
-    conn.close()
-    if chemins_images:
+    """Supprime une intervention du CSV et ses images"""
+    df = lire_csv()
+    df = df[df['id'] != id_interv]
+    ecrire_csv(df)
+    
+    # Supprimer les images associées
+    if chemins_images and isinstance(chemins_images, str):
         for chemin in chemins_images.split(','):
             if os.path.exists(chemin):
                 os.remove(chemin)
@@ -78,7 +97,7 @@ names = ["Administrateur"]
 usernames = ["admin"]
 passwords = ["1234"]
 
-# Hachage des mots de passe (obligatoire pour la sécurité)
+# Hachage des mots de passe
 hashed_passwords = stauth.Hasher(passwords).generate()
 
 # Création de l'objet d'authentification
@@ -86,8 +105,8 @@ authenticator = stauth.Authenticate(
     {'usernames': {
         usernames[0]: {'name': names[0], 'password': hashed_passwords[0]}
     }},
-    "cookie_intervention",  # Nom du cookie
-    "abcdef",               # Clé de signature
+    "cookie_intervention",
+    "abcdef",
     cookie_expiry_days=30
 )
 
@@ -101,7 +120,7 @@ elif authentication_status == None:
     st.warning('Veuillez entrer votre identifiant et votre mot de passe')
 
 elif authentication_status:
-    # --- ICI ON PLACE TOUT LE CODE DE L'APPLICATION ---
+    # --- CODE DE L'APPLICATION ---
     
     with st.sidebar:
         st.write(f"Bienvenue **{name}**")
@@ -150,12 +169,8 @@ elif authentication_status:
                         buffer.write(f.getbuffer())
                     chemins.append(path)
                 
-                conn = sqlite3.connect('interventions.db')
-                c = conn.cursor()
-                c.execute("INSERT INTO interventions (date_heure, nom, fonction, type, description, chemins_images) VALUES (?,?,?,?,?,?)",
-                          (datetime.now().strftime("%d/%m/%Y %H:%M"), nom, fonction, type_interv, description, ",".join(chemins)))
-                conn.commit()
-                conn.close()
+                # Utilisation de la fonction CSV au lieu de SQL
+                ajouter_intervention(nom, fonction, type_interv, description, chemins)
                 st.success(f"✅ Opération de type '{type_interv}' enregistrée avec succès.")
             else:
                 st.warning("⚠️ Veuillez remplir au moins le nom et la description.")
@@ -164,9 +179,7 @@ elif authentication_status:
     # ONGLET 2 : HISTORIQUE & EXPORT
     # ==========================================
     with onglet_historique:
-        conn = sqlite3.connect('interventions.db')
-        df = pd.read_sql_query("SELECT * FROM interventions ORDER BY id DESC", conn)
-        conn.close()
+        df = lire_csv()
 
         if not df.empty:
             st.subheader("Indicateurs clés")
@@ -206,30 +219,37 @@ elif authentication_status:
 
             st.divider()
             st.subheader("🔍 Détails et Médias")
-            selected_id = st.selectbox("Sélectionner un ID pour consulter", options=df_display['id'].tolist())
             
-            if selected_id:
-                row = df_display[df_display['id'] == selected_id].iloc[0]
+            if not df_display.empty:
+                selected_id = st.selectbox("Sélectionner un ID pour consulter", options=df_display['id'].tolist())
                 
-                c_det1, c_det2 = st.columns([2, 1])
-                with c_det1:
-                    st.write(f"**Type :** {row['type']}")
-                    st.write(f"**Description :** {row['description']}")
-                    imgs = row['chemins_images']
-                    if imgs:
-                        list_imgs = imgs.split(',')
-                        cols = st.columns(3)
-                        for idx, p in enumerate(list_imgs):
-                            if os.path.exists(p):
-                                cols[idx % 3].image(Image.open(p), use_container_width=True)
-                    else:
-                        st.info("Aucun média joint.")
-                
-                with c_det2:
-                    st.error("Administration")
-                    if st.button("🗑️ Supprimer l'entrée", use_container_width=True):
-                        if supprimer_intervention(selected_id, row['chemins_images']):
-                            st.success("Entrée supprimée.")
-                            st.rerun()
+                if selected_id:
+                    row = df_display[df_display['id'] == selected_id].iloc[0]
+                    
+                    c_det1, c_det2 = st.columns([2, 1])
+                    with c_det1:
+                        st.write(f"**Type :** {row['type']}")
+                        st.write(f"**Description :** {row['description']}")
+                        imgs = row['chemins_images']
+                        if imgs and isinstance(imgs, str) and imgs.strip():
+                            list_imgs = imgs.split(',')
+                            cols = st.columns(3)
+                            for idx, p in enumerate(list_imgs):
+                                if os.path.exists(p):
+                                    try:
+                                        cols[idx % 3].image(Image.open(p), use_container_width=True)
+                                    except:
+                                        cols[idx % 3].warning("Image corrompue")
+                        else:
+                            st.info("Aucun média joint.")
+                    
+                    with c_det2:
+                        st.error("Administration")
+                        if st.button("🗑️ Supprimer l'entrée", use_container_width=True):
+                            if supprimer_intervention(selected_id, row['chemins_images']):
+                                st.success("Entrée supprimée.")
+                                st.rerun()
+            else:
+                st.info("Aucun résultat trouvé pour votre recherche.")
         else:
-            st.info("La base de données est vide.")
+            st.info("La base de données est vide. Commencez par ajouter une intervention dans l'onglet 'Saisie'.")
