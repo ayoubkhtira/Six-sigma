@@ -6,6 +6,50 @@ import shutil
 from datetime import datetime
 from PIL import Image
 import io
+import streamlit as st
+import streamlit_authenticator as stauth
+import yaml
+from yaml.loader import SafeLoader
+# ... (vos autres imports : sqlite3, pandas, etc.)
+
+# --- CONFIGURATION DES UTILISATEURS ---
+# Dans une version réelle, on mettrait cela dans un fichier sépare (config.yaml)
+names = ["Administrateur"]
+usernames = ["admin"]
+passwords = ["1234"] # À l'étape suivante, on les "hash" pour la sécurité
+
+# Hachage des mots de passe (obligatoire pour la sécurité)
+hashed_passwords = stauth.Hasher(passwords).generate()
+
+# Création de l'objet d'authentification
+authenticator = stauth.Authenticate(
+    {'usernames': {
+        usernames[0]: {'name': names[0], 'password': hashed_passwords[0]}
+    }},
+    "cookie_intervention", # Nom du cookie
+    "abcdef",              # Clé de signature
+    cookie_expiry_days=30
+)
+
+# --- AFFICHAGE DE L'ÉCRAN DE CONNEXION ---
+name, authentication_status, username = authenticator.login('Connexion', 'main')
+
+if authentication_status == False:
+    st.error('L\'identifiant ou le mot de passe est incorrect')
+
+elif authentication_status == None:
+    st.warning('Veuillez entrer votre identifiant et votre mot de passe')
+
+elif authentication_status:
+    # --- ICI ON PLACE TOUT LE CODE DE VOTRE APPLICATION PRÉCÉDENTE ---
+    
+    with st.sidebar:
+        st.write(f"Bienvenue **{name}**")
+        authenticator.logout('Déconnexion', 'sidebar')
+
+    # LE RESTE DE VOTRE CODE (ONGLETS, FORMULAIRES, SQLITE...) VA ICI
+    st.title("📦 Gestion des Interventions & Inventaires")
+    # ...
 
 # -----------------------------------------
 # CONFIGURATION ET INITIALISATION
