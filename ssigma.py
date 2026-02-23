@@ -1,12 +1,29 @@
 import streamlit as st
+import sys
+import subprocess
+
+# Vérifier si le module streamlit-authenticator est installé
+try:
+    import streamlit_authenticator as stauth
+except ImportError:
+    st.error("🔧 Module streamlit-authenticator non trouvé. Installation en cours...")
+    with st.spinner("Installation en cours..."):
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-authenticator"])
+            import streamlit_authenticator as stauth
+            st.success("✅ Module installé avec succès!")
+            st.rerun()  # Redémarrer l'application après installation
+        except Exception as e:
+            st.error(f"❌ Erreur lors de l'installation : {e}")
+            st.info("💡 Veuillez installer manuellement : pip install streamlit-authenticator")
+            st.stop()
+
 import sqlite3
 import pandas as pd
 import os
-import shutil
 from datetime import datetime
 from PIL import Image
 import io
-import streamlit_authenticator as stauth
 import yaml
 from yaml.loader import SafeLoader
 
